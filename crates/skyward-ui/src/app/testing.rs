@@ -5,7 +5,7 @@ use super::*;
 use skyward_info::{Boot, Charge, Cpu, Storage};
 use skyward_net::reach::Reach;
 
-// A Xiaomi 13 Ultra panel: 1440 × 3200 at 560 dpi.
+// A Galaxy S21 Ultra 5G panel: 1440 × 3200 at 560 dpi.
 pub(super) const W: u32 = 1440;
 pub(super) const H: u32 = 3200;
 pub(super) const PPD: f32 = 3.5;
@@ -16,8 +16,8 @@ pub(super) fn fonts() -> Fonts {
 
 pub(super) fn info() -> DeviceInfo {
     DeviceInfo {
-        model: "Xiaomi 13 Ultra".into(),
-        codename: "ishtar".into(),
+        model: "Galaxy S21 Ultra 5G".into(),
+        codename: "p3q".into(),
         soc: None,
         cpu: Cpu { cores: 8, max_khz: Some(3_187_200) },
         ram_kib: 15_556_972,
@@ -25,6 +25,7 @@ pub(super) fn info() -> DeviceInfo {
         screen: Some(6.73),
         os_version: None,
         android: None,
+        firmware: None,
         locale: None,
         security_patch: None,
         kernel: "5.15.178".into(),
@@ -177,7 +178,7 @@ pub(super) fn scroll_to(app: &mut App, f: &Fonts, to: f32, now: u64) {
 }
 
 /// A screen the home page's rows fit on with a little room to spare.
-pub(super) const SNUG: u32 = 3000;
+pub(super) const SNUG: u32 = 3180;
 
 /// The installing page, opened from the install page, with the
 /// installer started and waiting for the computer.

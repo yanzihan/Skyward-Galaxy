@@ -267,6 +267,176 @@ impl Canvas {
     }
 
     /// Dim this opaque canvas toward black, keeping `level` of its light.
+    /// What the canvas holds, seen through frosted glass: each pixel takes
+    /// the mean of the ones within `radius` of it, across and then down.
+    /// Answers whether it blurred anything.
+    pub fn frost(&mut self, radius: u32) -> bool {
+        let r = radius as usize;
+        let (cols, rows) = (self.span as usize, (self.bottom - self.top) as usize);
+        if r == 0 || cols < 2 || rows < 2 {
+            return false;
+        }
+        let mut data = std::mem::take(&mut self.data);
+        let mut across = vec![0u8; data.len()];
+        for y in 0..rows {
+            let row = y * cols * 4;
+            for c in 0..4 {
+                let mut sum: u32 = 0;
+                let mut count: u32 = 0;
+                for x in 0..=r.min(cols - 1) {
+                    sum += u32::from(data[row + x * 4 + c]);
+                    count += 1;
+                }
+                for x in 0..cols {
+                    across[row + x * 4 + c] = (sum / count) as u8;
+                    if x >= r {
+                        sum -= u32::from(data[row + (x - r) * 4 + c]);
+                        count -= 1;
+                    }
+                    let next = x + r + 1;
+                    if next < cols {
+                        sum += u32::from(data[row + next * 4 + c]);
+                        count += 1;
+                    }
+                }
+            }
+        }
+        for x in 0..cols {
+            for c in 0..4 {
+                let mut sum: u32 = 0;
+                let mut count: u32 = 0;
+                for y in 0..=r.min(rows - 1) {
+                    sum += u32::from(across[(y * cols + x) * 4 + c]);
+                    count += 1;
+                }
+                for y in 0..rows {
+                    data[(y * cols + x) * 4 + c] = (sum / count) as u8;
+                    if y >= r {
+                        sum -= u32::from(across[((y - r) * cols + x) * 4 + c]);
+                        count -= 1;
+                    }
+                    let next = y + r + 1;
+                    if next < rows {
+                        sum += u32::from(across[(next * cols + x) * 4 + c]);
+                        count += 1;
+                    }
+                }
+            }
+        }
+        self.data = data;
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Rgba {
+        let at = (((y - self.top) * self.span + (x - self.left)) * 4) as usize;
+        let d = &self.data[at..at + 4];
+        Rgba { r: d[0], g: d[1], b: d[2], a: d[3] }
+    }
+
+    /// A sum of the canvas's bytes, sampled thickly, for telling a canvas
+    /// that was zeroed from one that was merely flattened in the log.
+    pub fn checksum(&self) -> u64 {
+        self.data.iter().step_by(97).fold(0u64, |sum, b| sum.wrapping_add(u64::from(*b)))
+    }
+
+    /// A copy of the canvas one pixel in `step` of each way, each of the copy's
+    /// pixels the mean of the block it stands for: what the lock screen keeps
+    /// behind itself and softens.
+    pub fn thumbnail(&self, step: u32) -> Canvas {
+        let step = step.max(1);
+        let (tw, th) = (self.w.div_ceil(step), self.h.div_ceil(step));
+        let mut small = Canvas::new(tw, th);
+        for ty in 0..th {
+            let y0 = ty * step;
+            let y1 = (y0 + step).min(self.h);
+            for tx in 0..tw {
+                let x0 = tx * step;
+                let x1 = (x0 + step).min(self.w);
+                let mut sum = [0u32; 4];
+                let mut n = 0u32;
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let at = (((y - self.top) as usize * self.span as usize) + (x - self.left) as usize) * 4;
+                        for (c, s) in sum.iter_mut().enumerate() {
+                            *s += u32::from(self.data[at + c]);
+                        }
+                        n += 1;
+                    }
+                }
+                if n == 0 {
+                    continue;
+                }
+                let at = ((ty * tw + tx) as usize) * 4;
+                for (c, s) in sum.iter().enumerate() {
+                    small.data[at + c] = (s / n) as u8;
+                }
+            }
+        }
+        small
+    }
+
+    /// Stretch the canvas, one of the small copies [`thumbnail`] makes, over
+    /// all of `w` × `h`, each pixel the bilinear sample of the four of it
+    /// around where it falls.
+    pub fn blit_scaled(&mut self, src: &Canvas, w: u32, h: u32) {
+        if src.w == 0 || src.h == 0 || w == 0 || h == 0 {
+            return;
+        }
+        let (sx, sy) = (src.w as f32 / w as f32, src.h as f32 / h as f32);
+        let near = |v: f32, n: u32| {
+            let v = v.clamp(0.0, (n - 1) as f32);
+            let (i, f) = (v.floor() as u32, v.fract());
+            (i, (i + 1).min(n - 1), f)
+        };
+        let px = |x: u32, y: u32| {
+            let i = (y as usize * src.w as usize + x as usize) * 4;
+            [src.data[i], src.data[i + 1], src.data[i + 2], src.data[i + 3]]
+        };
+        for y in 0..self.h {
+            let (sy0, sy1, fy) = near((y as f32 + 0.5) * sy - 0.5, src.h);
+            for x in 0..self.w {
+                let (sx0, sx1, fx) = near((x as f32 + 0.5) * sx - 0.5, src.w);
+                let (a, b, c, d) = (px(sx0, sy0), px(sx1, sy0), px(sx0, sy1), px(sx1, sy1));
+                let mix = |k: usize| {
+                    let top = a[k] as f32 + (b[k] as f32 - a[k] as f32) * fx;
+                    let bottom = c[k] as f32 + (d[k] as f32 - c[k] as f32) * fx;
+                    (top + (bottom - top) * fy).round().clamp(0.0, 255.0) as u8
+                };
+                let i = (((y - self.top) as usize * self.span as usize) + (x - self.left) as usize) * 4;
+                if i + 4 <= self.data.len() {
+                    self.data[i..i + 4].copy_from_slice(&[mix(0), mix(1), mix(2), 255]);
+                }
+            }
+        }
+    }
+
+    /// A rough measure of how sharp what the canvas holds is: how much
+    /// neighbours differ across a sample of it, for telling a frosted frame
+    /// from a sharp one in the log.
+    pub fn sharpness(&self) -> u64 {
+        let (cols, rows) = (self.span, self.bottom - self.top);
+        if cols < 8 || rows < 8 {
+            return 0;
+        }
+        let red = |x: u32, y: u32| -> u64 {
+            let at = (((y - self.top) * self.span + (x - self.left)) * 4) as usize;
+            u64::from(self.data[at])
+        };
+        let (step_x, step_y) = ((cols / 120).max(1), (rows / 120).max(1));
+        let mut sum = 0;
+        let mut y = self.top;
+        while y < self.bottom {
+            let mut x = self.left;
+            while x + step_x < self.left + cols {
+                sum += red(x, y).abs_diff(red(x + step_x, y));
+                x += step_x;
+            }
+            y += step_y;
+        }
+        sum
+    }
+
     pub fn dim(&mut self, level: f32) {
         let keep = (level.clamp(0.0, 1.0) * 256.0).round() as u32;
         if keep >= 256 {
@@ -1188,9 +1358,100 @@ fn rr_sdf(px: f32, py: f32, cx: f32, cy: f32, hx: f32, hy: f32, r: f32) -> f32 {
     (ox * ox + oy * oy).sqrt() + dx.max(dy).min(0.0) - r
 }
 
+/// `c` with every pixel the mean of the `reach` pixels either side of it,
+/// past an edge counting the edge pixel again, three times over: close to a
+/// Gaussian of that spread. This is the lock screen's softening, through
+/// which the phones' own locks show the page behind themselves.
+pub fn soften(c: &mut Canvas, reach: usize) {
+    if reach == 0 || c.w == 0 || c.h == 0 {
+        return;
+    }
+    let (w, h) = (c.w as usize, c.h as usize);
+    let width = (2 * reach + 1) as u32;
+    let mut a = c.data.clone();
+    let mut b = vec![0u8; a.len()];
+    for _ in 0..3 {
+        for y in 0..h {
+            let row = y * w * 4;
+            for ch in 0..4 {
+                let mut sum = a[row + ch] as u32 * (reach as u32 + 1);
+                for k in 1..=reach {
+                    sum += a[row + k.min(w - 1) * 4 + ch] as u32;
+                }
+                for x in 0..w {
+                    b[row + x * 4 + ch] = ((sum + width / 2) / width) as u8;
+                    let gone = a[row + x.saturating_sub(reach) * 4 + ch] as u32;
+                    let come = a[row + (x + reach + 1).min(w - 1) * 4 + ch] as u32;
+                    sum = sum - gone + come;
+                }
+            }
+        }
+        for x in 0..w {
+            for ch in 0..4 {
+                let mut sum = b[x * 4 + ch] as u32 * (reach as u32 + 1);
+                for k in 1..=reach {
+                    sum += b[k.min(h - 1) * w * 4 + x * 4 + ch] as u32;
+                }
+                for y in 0..h {
+                    a[y * w * 4 + x * 4 + ch] = ((sum + width / 2) / width) as u8;
+                    let gone = b[y.saturating_sub(reach) * w * 4 + x * 4 + ch] as u32;
+                    let come = b[(y + reach + 1).min(h - 1) * w * 4 + x * 4 + ch] as u32;
+                    sum = sum - gone + come;
+                }
+            }
+        }
+    }
+    c.data = a;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frosting_a_screen_sized_canvas_keeps_its_ink() {
+        let (w, h) = (1440u32, 3200u32);
+        let mut c = Canvas::filled(w, h, Rgba::rgb(255, 255, 255));
+        c.fill_rect(0.0, 0.0, w as f32 / 2.0, h as f32, Rgba::rgb(0, 0, 0));
+        let before = c.sharpness();
+        c.frost(32);
+        let after = c.sharpness();
+        assert!(before > 0, "the marks are there before");
+        assert!(after > 0, "frosting keeps some of them: before {before}, after {after}");
+    }
+
+    #[test]
+    fn softening_spreads_a_speck_no_further_than_its_reach() {
+        let mut c = Canvas::filled(9, 9, Rgba::rgb(0, 0, 0));
+        let i = (4 * 9 + 4) * 4;
+        c.data[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+        soften(&mut c, 1);
+        assert!(c.pixel(4, 4).r > 0 && c.pixel(4, 4).r < 255, "the speck is spread over its own pixel: {}", c.pixel(4, 4).r);
+        assert!(c.pixel(3, 4).r > 0, "and reaches the pixel beside it: {}", c.pixel(3, 4).r);
+        assert_eq!(c.pixel(0, 0).r, 0, "and no further than its reach");
+    }
+
+    #[test]
+    fn stretching_a_small_copy_fills_the_whole_canvas() {
+        let mut small = Canvas::filled(4, 4, Rgba::rgb(255, 255, 255));
+        small.fill_rect(0.0, 0.0, 2.0, 4.0, Rgba::rgb(0, 0, 0));
+        let mut big = Canvas::new(40, 40);
+        big.blit_scaled(&small, 40, 40);
+        assert_eq!(big.pixel(2, 20).r, 0, "the dark side comes across");
+        assert_eq!(big.pixel(38, 20).r, 255, "and so does the light one");
+        assert!(big.sharpness() > 0, "the stretch has ink");
+    }
+
+    #[test]
+    fn frosting_spreads_an_edge_across_its_neighbourhood() {
+        let mut c = Canvas::filled(32, 32, Rgba::rgb(255, 255, 255));
+        c.fill_rect(0.0, 0.0, 16.0, 32.0, Rgba::rgb(0, 0, 0));
+        c.frost(6);
+        assert_eq!(c.pixel(1, 16).r, 0, "the far side of the dark half stays dark");
+        let edge = c.pixel(16, 16).r;
+        assert!((110..=145).contains(&edge), "the edge takes the mean of both sides: {edge}");
+        assert_eq!(c.pixel(30, 16).r, 255, "the far side of the light half stays light");
+    }
 
     #[test]
     fn a_picture_holds_the_colors_the_panel_shows() {

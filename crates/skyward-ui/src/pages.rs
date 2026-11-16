@@ -1,9 +1,9 @@
 use crate::app::{
-    Action, BackupAt, BackupEnd, BackupJob, Check, ClashChoice, Confirm, Damage, Data, Dock, DownloadEnd, EraseStop, Field, FileKind,
-    FileOp, FileTask, Fold, Folder, Frame, FsAction, FsChoice, FsRow, Have, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place, Rows, Screen,
-    SkywardCheck, SkywardEnd, SkywardJob, SkywardStage, Slider, Source, State, Switch, SystemsWork, Target, UsbDrive, UsbLink, Wipe, ADDABLE,
-    BACKUP_PARTS, DATA_ERASED, DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE,
-    USB_DRIVE_WANTED, WIPES, installs, starting,
+    Action, BackupAt, BackupEnd, BackupJob, ClashChoice, Confirm, Damage, Data, Dock, EraseStop, Field, FileKind, FileOp, FileTask, Fold,
+    Folder, Frame, FsAction, FsChoice, FsRow, HeroArt, Hit, Install, JobEnd, Keys, Pick, Place, Rows, Screen, SkywardCheck, SkywardEnd,
+    SkywardJob, SkywardStage, Slider, Source, State, Switch, SystemsWork, Target, UsbDrive, UsbLink, Wipe, ADDABLE, BACKUP_PARTS,
+    DATA_ERASED, DATA_PARTITION, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, TIME_ZONES, USB_DRIVE_UNREADABLE, USB_DRIVE_WANTED, WIPES, installs,
+    starting,
 };
 use crate::canvas::Canvas;
 use crate::color::Rgba;
@@ -143,7 +143,7 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
 
 /// The home page's large title, and what its search bar and the search
 /// page's field say while nothing is typed.
-pub const HOME_TITLE: &str = "Skyward";
+pub const HOME_TITLE: &str = "Skyward-Galaxy";
 pub const SEARCH_HINT: Text = ["搜索功能与分区", "搜尋功能與分割區", "Search features and partitions"];
 
 const REBOOT_TARGETS: [(Text, Option<Text>); 6] = [
@@ -303,12 +303,14 @@ pub fn home(cx: &Ctx) -> Frame {
     let target = l.pick(REBOOT_TARGETS[cx.state.reboot].0);
     let system = widgets::list(&mut c, t, f, y, &[
         Row::new(l.pick(["清除数据", "清除資料", "Wipe data"])).icon(RED, Icon::Wipe),
+        Row::new(l.pick(LOCK_SCREEN)).icon(SLATE, Icon::Lock),
         Row::new(l.pick(ADVANCED)).icon(SLATE, Icon::More),
         Row::new(l.pick(SETTINGS)).icon(SLATE, Icon::Gear),
         Row::new(l.pick(REBOOT)).icon(ORANGE, Icon::Power).trail(Trail::Value(target)),
     ]);
     out.extend(hits(&system.rows, &[
         Action::Open(Screen::Wipe),
+        Action::LockPanel,
         Action::Open(Screen::Advanced),
         Action::Open(Screen::Settings),
         Action::Open(Screen::Reboot),
@@ -333,18 +335,10 @@ fn systems_value(cx: &Ctx) -> Option<String> {
     }
 }
 
-/// What the advanced page says beside its system update entry: a download
-/// under way, a newer system found, or where an update the system installed
-/// stands.
+/// What the advanced page says beside its system update entry: where an
+/// update the system installed stands.
 fn update_value(cx: &Ctx) -> &'static str {
-    let (s, l) = (cx.state, cx.state.lang);
-    if s.downloading() {
-        return l.pick(DOWNLOADING);
-    }
-    if s.newest().is_some_and(|r| cx.info.os_version.as_deref() != Some(r.version.as_str())) {
-        return l.pick(["有新版本", "有新版本", "New version"]);
-    }
-    fmt::update_value(l, &s.update)
+    fmt::update_value(cx.state.lang, &cx.state.update)
 }
 
 /// Preferences, opening with the stock「显示与亮度」theme previews.
@@ -529,9 +523,9 @@ pub fn about(cx: &Ctx) -> Frame {
     let (out, summary_top, bottom) = about_cards(cx, &mut c);
     let canvas = fit(c, t, bottom);
     let art = HeroArt {
-        wordmark: widgets::wordmark(t, f, "Skyward", m.dp(233.7), m.dp(37.8)),
-        version: widgets::version_line(t, f, VERSION),
-        author: widgets::author_line(t, f, AUTHOR),
+        wordmark: widgets::wordmark(t, f, "Skyward-Galaxy", m.dp(233.7), m.dp(37.8)),
+        version: widgets::version_line(t, f, ""),
+        author: widgets::author_line(t, f, ""),
         runs: canvas.runs(),
     };
     Frame { header: false, hero: Some(art), ..Frame::new(t, canvas, out, cx.state.lang.pick(ABOUT), summary_top) }
@@ -544,7 +538,11 @@ const BATTERY_CAPACITY: Text = ["电池容量", "電池容量", "Battery capacit
 const SCREEN_SIZE: Text = ["屏幕尺寸", "螢幕尺寸", "Screen size"];
 const RESOLUTION: Text = ["分辨率", "解析度", "Resolution"];
 const OS_VERSION: Text = ["OS 版本", "OS 版本", "OS version"];
+const SKYWARD_VERSION: Text = ["Skyward 版本", "Skyward 版本", "Skyward version"];
+const SKYWARD_AUTHOR: Text = ["Skyward 作者", "Skyward 作者", "Skyward author"];
+const MAINTAINER: Text = ["Skyward-Galaxy 维护者", "Skyward-Galaxy 維護者", "Skyward-Galaxy maintainer"];
 const ANDROID_VERSION: Text = ["Android 版本", "Android 版本", "Android version"];
+const FIRMWARE: Text = ["固件版本", "韌體版本", "Firmware version"];
 const CURRENT_SLOT: Text = ["当前槽位", "目前槽位", "Current slot"];
 const DATA_PART: Text = ["data 分区", "data 分割區", "data partition"];
 
@@ -573,8 +571,26 @@ fn about_cards(cx: &Ctx, c: &mut Canvas) -> (Vec<Hit>, f32, f32) {
     if let Some(r) = &i.android {
         facts.push(Fact { title: l.pick(ANDROID_VERSION), value: r.clone(), link: false });
     }
+    if let Some(v) = &i.firmware {
+        facts.push(Fact { title: l.pick(FIRMWARE), value: v.clone(), link: false });
+    }
     let summary = widgets::facts(c, t, f, m.dp(490.7), &facts, &tone);
     out.push(Hit { rect: summary.rows[1], action: Action::Open(Screen::Specs) });
+
+    // The recovery itself, its maker, and this port's maintainer, in the
+    // card between the phone's own facts and its machine's.
+    let credit = widgets::facts(
+        c,
+        t,
+        f,
+        summary.bottom + m.card_gap,
+        &[
+            Fact { title: l.pick(SKYWARD_VERSION), value: VERSION.to_string(), link: false },
+            Fact { title: l.pick(SKYWARD_AUTHOR), value: AUTHOR.to_string(), link: false },
+            Fact { title: l.pick(MAINTAINER), value: "YanJiaMian".to_string(), link: false },
+        ],
+        &tone,
+    );
 
     let processor = soc(l, i).map_or_else(|| fmt::cpu(l, &i.cpu), str::to_string);
     let mut specs = vec![(l.pick(PROCESSOR), processor), (l.pick(RAM), fmt::ram(i.ram_kib))];
@@ -587,7 +603,7 @@ fn about_cards(cx: &Ctx, c: &mut Canvas) -> (Vec<Hit>, f32, f32) {
     if let Some(p) = i.panel {
         specs.push((l.pick(RESOLUTION), fmt::panel(p)));
     }
-    let y = widgets::spec_card(c, t, f, summary.bottom + m.card_gap, &fmt::model_lines(&i.model), &specs, &tone);
+    let y = widgets::spec_card(c, t, f, credit.bottom + m.card_gap, &fmt::model_lines(&i.model), &specs, &tone);
     let links = widgets::list_toned(c, t, f, y + m.card_gap, &[Row::new(l.pick(SPECS)), Row::new(l.pick(LOGS))], &tone);
     out.extend(hits(&links.rows, &[Action::Open(Screen::Specs), Action::Open(Screen::Logs)]));
     (out, summary.rows[0].y, links.bottom)
@@ -2221,6 +2237,7 @@ pub fn advanced(cx: &Ctx) -> Frame {
 }
 
 const RELABEL: Text = ["修复 SELinux 上下文", "修復 SELinux 上下文", "Fix SELinux contexts"];
+const LOCK_SCREEN: Text = ["一键锁屏", "一鍵鎖屏", "Lock screen"];
 const FILESYSTEMS: Text = ["文件系统", "檔案系統", "Filesystems"];
 const STOPPED: Text = ["已停止", "已停止", "Stopped"];
 const STOPPING: Text = ["正在停止", "正在停止", "Stopping"];
@@ -2568,11 +2585,6 @@ pub fn update(cx: &Ctx) -> Frame {
         y = widgets::section_first(&mut c, t, f, y, l.pick(["本机", "本機", "This phone"]));
         y = widgets::info_card(&mut c, t, f, y, &[(l.pick(["当前版本", "目前版本", "Current version"]), v.clone())]);
     }
-    if s.update_server {
-        let online_update = l.pick(["在线更新", "線上更新", "Online update"]);
-        y = if y == top { widgets::section_first(&mut c, t, f, y, online_update) } else { widgets::section(&mut c, t, f, y, online_update) };
-        y = online(&mut c, cx, y, &mut out);
-    }
     let next = match &s.boot_slots {
         Some(Ok(slots)) => Some(slots.active),
         _ => None,
@@ -2601,114 +2613,13 @@ pub fn update(cx: &Ctx) -> Frame {
     Frame::new(t, fit(c, t, y), out, l.pick(UPDATE), top)
 }
 
-/// What downloading or checking for updates needs first, while the phone
-/// has joined no network that reaches the internet.
-const WLAN_FIRST: Text = ["需先连接 WLAN", "需先連接 Wi-Fi", "Connect to Wi-Fi first"];
 const CHECKING: Text = ["正在检查更新", "正在檢查更新", "Checking for updates"];
 const CHECK_FOR_UPDATES: Text = ["检查更新", "檢查更新", "Check for updates"];
+/// What checking for an update needs first, while the phone has joined no
+/// network that reaches the internet.
+const WLAN_FIRST: Text = ["需先连接 WLAN", "需先連接 Wi-Fi", "Connect to Wi-Fi first"];
 const DOWNLOADING: Text = ["正在下载", "正在下載", "Downloading"];
 const CHECKING_PART: Text = ["正在校验已下载的部分", "正在驗證已下載的部分", "Verifying what was downloaded"];
-
-/// Asking the update server for the newest system, then its full package:
-/// downloading it, how far that has come, and installing it once it is
-/// whole; then what to note before installing it.
-fn online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
-    let (t, f, s, i, l) = (cx.t, cx.f, cx.state, cx.info, cx.state.lang);
-    let release = match &s.check {
-        Check::Asking => return widgets::list(c, t, f, y, &[Row::new(l.pick(CHECKING)).trail(Trail::None)]).bottom,
-        Check::Answered(Some(r)) => r,
-        other => {
-            let mut row = Row::new(l.pick(CHECK_FOR_UPDATES));
-            if !s.online() {
-                row = row.subtitle(l.pick(WLAN_FIRST));
-            }
-            let check = widgets::list(c, t, f, y, &[row]);
-            out.extend(hits(&check.rows, &[Action::CheckUpdate]));
-            return match other {
-                Check::Failed(why) => widgets::footnote(c, t, f, check.bottom, &fmt::unanswered(l, why)),
-                Check::Answered(None) => {
-                    let none = l.pick(["暂无本机的系统更新信息。", "目前沒有本機的系統更新資訊。", "The server knows of no system update for this phone."]);
-                    widgets::footnote(c, t, f, check.bottom, none)
-                }
-                _ => check.bottom,
-            };
-        }
-    };
-    let newer = i.os_version.as_deref() != Some(release.version.as_str());
-    let version = &release.version;
-    let title = if newer { tr!(l, "新版本 {version}", "新版本 {version}", "New version {version}") } else { l.pick(["已是最新版本", "已是最新版本", "Up to date"]).to_string() };
-    let size = match release.length {
-        Some(length) => fmt::file_size(length),
-        None => fmt::package_size(&release.size),
-    };
-    let package = tr!(l, "完整更新包 {size}", "完整更新檔 {size}", "Full OTA package {size}");
-    let mut y = widgets::list(c, t, f, y, &[Row::new(&title).icon(GREEN, Icon::Layers).subtitle(&package).trail(Trail::None)]).bottom;
-    match (&s.download, s.have) {
-        (Some(job), _) if job.outcome.is_none() => {
-            let (heading, detail, share) = match job.progress {
-                None => (l.pick(GETTING_READY), String::new(), None),
-                Some(p) => downloaded(l, p, job.rate),
-            };
-            y = widgets::progress_card(c, t, f, y + t.m.card_gap, heading, &detail, share);
-            let label = l.pick(if job.stopping { ["正在暂停", "正在暫停", "Pausing"] } else { ["暂停", "暫停", "Pause"] });
-            let stop = widgets::list(c, t, f, y + t.m.card_gap, &[Row::new(label).trail(Trail::None)]);
-            if !job.stopping {
-                out.extend(hits(&stop.rows, &[Action::StopDownload]));
-            }
-            y = stop.bottom;
-        }
-        (_, Have::Whole(_)) => {
-            let row = Row::new(l.pick(["安装", "安裝", "Install"])).subtitle(l.pick(["已下载到内部存储", "已下載到內部儲存空間", "Downloaded to internal storage"]));
-            let install = widgets::list(c, t, f, y + t.m.card_gap, &[row]);
-            out.extend(hits(&install.rows, &[Action::InstallDownloaded]));
-            y = install.bottom;
-        }
-        (job, have) => {
-            match job.as_ref().and_then(|j| j.outcome.as_ref()) {
-                Some(DownloadEnd::Failed(why)) => y = widgets::footnote(c, t, f, y, &fmt::download_failure(l, why)),
-                Some(DownloadEnd::Stopped) => y = widgets::footnote(c, t, f, y, l.pick(["已暂停下载。", "已暫停下載。", "Download paused."])),
-                _ => {}
-            }
-            let title = l.pick(if matches!(have, Have::Part(_)) { ["继续下载", "繼續下載", "Resume download"] } else { ["下载", "下載", "Download"] });
-            let had = match have {
-                Have::Part(done) => {
-                    let done = fmt::file_size(done);
-                    Some(tr!(l, "已下载 {done}", "已下載 {done}", "{done} downloaded"))
-                }
-                _ => None,
-            };
-            let sub = if !s.data.storage_open() {
-                Some(l.pick(DECRYPT_NEEDED))
-            } else if !s.online() {
-                Some(l.pick(WLAN_FIRST))
-            } else {
-                had.as_deref()
-            };
-            let row = Row::new(title);
-            let download = widgets::list(c, t, f, y + t.m.card_gap, &[sub.map_or(row, |sub| row.subtitle(sub))]);
-            out.extend(hits(&download.rows, &[Action::Download]));
-            y = download.bottom;
-        }
-    }
-    let saved = tr!(
-        l,
-        "完整更新包将保存到\"/sdcard/{DOWNLOADS}\"中，安装后不会自动删除。",
-        "完整更新檔將儲存到「/sdcard/{DOWNLOADS}」中，安裝後不會自動刪除。",
-        "The full OTA package is saved in “/sdcard/{DOWNLOADS}”, and stays there after it's installed."
-    );
-    let points = [
-        l.pick(["安装系统更新不会删除用户数据，建议在安装前进行备份。", "安裝系統更新不會刪除使用者資料，建議在安裝前進行備份。", "Installing a system update deletes no user data. Backing up first is still wise."]),
-        saved.as_str(),
-        l.pick(["下载中断后可继续下载，已下载的部分会保留。", "下載中斷後可繼續下載，已下載的部分會保留。", "A download cut short can be resumed, keeping what was downloaded."]),
-        l.pick([
-            "更新后，系统会在后台进行一系列优化，期间可能出现发热、耗电增加等情况，1 ~ 3 天内将自行恢复。",
-            "更新後，系統會在背景進行一系列最佳化，期間可能出現發熱、耗電增加等情況，1 ~ 3 天內將自行恢復。",
-            "After the update the system optimizes itself in the background, and the phone may run warm or use more battery for 1 to 3 days.",
-        ]),
-    ];
-    widgets::notes(c, t, f, y + t.m.card_gap, l.pick(NOTES), &points)
-}
-
 const NOTES: Text = ["注意事项", "注意事項", "Notes"];
 
 /// What a progress card says of a download, and the share of it done:

@@ -6,7 +6,7 @@ use skyward_ui::{pages, App, Canvas, Ctx, Fonts, Theme};
 use skyward_vab::{Slot, SnapshotState};
 use std::time::Instant;
 
-// A Xiaomi 13 Ultra panel: 1440 × 3200 at 560 dpi, 120 frames a second.
+// A Galaxy S21 Ultra 5G panel: 1440 × 3200 at 560 dpi, 120 frames a second.
 const W: u32 = 1440;
 const H: u32 = 3200;
 const PPD: f32 = 3.5;
@@ -337,8 +337,8 @@ impl<'a> Panel<'a> {
 
 fn info() -> DeviceInfo {
     DeviceInfo {
-        model: "Xiaomi 13 Ultra".into(),
-        codename: "ishtar".into(),
+        model: "Galaxy S21 Ultra 5G".into(),
+        codename: "p3q".into(),
         soc: None,
         cpu: Cpu { cores: 8, max_khz: Some(3_187_200) },
         ram_kib: 15_556_972,
@@ -346,6 +346,7 @@ fn info() -> DeviceInfo {
         screen: Some(6.73),
         os_version: None,
         android: None,
+        firmware: None,
         locale: None,
         security_patch: None,
         kernel: "5.15.178".into(),

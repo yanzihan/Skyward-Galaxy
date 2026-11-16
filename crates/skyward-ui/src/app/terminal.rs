@@ -118,7 +118,7 @@ mod tests {
         assert!(tap(&mut app, &f, &i, Action::TermKey(TermKey::Ctrl)).is_empty());
         assert_eq!(tap(&mut app, &f, &i, Action::Type(Cap::Char('c'))), vec![Effect::TermInput(vec![0x03])]);
         assert_eq!(tap(&mut app, &f, &i, Action::TermKey(TermKey::Up)), vec![Effect::TermInput(b"\x1b[A".to_vec())]);
-        app.term_output(b"ishtar:/ # ");
+        app.term_output(b"p3q:/ # ");
         tap_back(&mut app, &f, &i, 0);
         assert!(tap(&mut app, &f, &i, Action::Open(Screen::Terminal)).is_empty(), "the same shell goes on");
         app.term_ended(TermEnd::Exited(0));

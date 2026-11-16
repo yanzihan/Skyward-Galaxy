@@ -372,7 +372,7 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = sideloading(&f, &i);
         app.install(Event::Checking { size: 7_103_043_868 }, 0);
-        app.install(Event::Installing { version: Some("OS3.0.306.0.WMACNXM".into()) }, 0);
+        app.install(Event::Installing { version: Some("G9980ZHSGHZB1".into()) }, 0);
         app.install(Event::Overwriting, 0);
         app.install(Event::Progress(Stage::Writing { done: 1 << 30, total: 7 << 30 }), 0);
         assert!(matches!(app.state.install, Install::Updating { overwriting: true, stage: Some(_), .. }));
@@ -419,15 +419,15 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = sideloading(&f, &i);
         app.install(Event::Checking { size: 7_103_043_868 }, 0);
-        app.install(Event::Ready { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: true }, 0);
-        assert_eq!(app.state.install, Install::Confirming { version: Some("OS3.0.306.0.WMACNXM".into()), wipe: true });
+        app.install(Event::Ready { version: Some("G9980ZHSGHZB1".into()), wipe: true }, 0);
+        assert_eq!(app.state.install, Install::Confirming { version: Some("G9980ZHSGHZB1".into()), wipe: true });
         // The question lit the panel, so the user swipes past the wake guard.
         let track = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Confirm(Confirm::InstallWipe)).unwrap().rect;
         let y = track.centre().1 - app.top().1;
         app.touch(Touch::Down(track.x + track.h / 2.0, y), &f, 1000);
         app.touch(Touch::Move(track.x + track.w, y), &f, 1000);
         assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Install]);
-        assert_eq!(app.state.install, Install::Updating { version: Some("OS3.0.306.0.WMACNXM".into()), stage: None, overwriting: false });
+        assert_eq!(app.state.install, Install::Updating { version: Some("G9980ZHSGHZB1".into()), stage: None, overwriting: false });
         app.key(Key::Back, 1000);
         assert_eq!(app.screen(), Screen::Installing, "an update being written keeps the page");
 

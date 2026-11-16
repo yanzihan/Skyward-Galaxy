@@ -154,9 +154,9 @@ mod spr {
 
         #[test]
         fn the_layout_is_read_from_the_capabilities() {
-            let text = "panel name=xiaomi o2 42 02 0a cmd mode dsc dsi panel\nspr_pack_type=pentile\nspr_pack_type_mode=BG-RG Type B\n";
+            let text = "panel name=ss_dsi_panel_S6E3HAD_AMB681XV01_WQHD cmd mode dsc dsi panel\nspr_pack_type=pentile\nspr_pack_type_mode=BG-RG Type B\n";
             assert_eq!(pack_type(text), Some("pentile"));
-            assert_eq!(pack_type("panel name=xiaomi 42 02 0a cmd mode dsc dsi panel\nspr_pack_type_mode=BG-RG Type B\n"), None, "the mode alone names none");
+            assert_eq!(pack_type("panel name=ss_dsi_panel_S6E3HAD_AMB681XV01_WQHD cmd mode dsc dsi panel\nspr_pack_type_mode=BG-RG Type B\n"), None, "the mode alone names none");
         }
 
         #[test]
@@ -187,15 +187,15 @@ mod spr {
 mod tests {
     use super::*;
 
-    const ISHTAR: &str = "mode_name=1440x3200x60cmd\nbit_clk_rate=1360000000\ndsc_mode=1\ntopology=sde_dualpipe_dscmerge\n\
-                          mode_name=1440x3200x120cmd\nsubmode_idx=1\ndsc_mode=1\ntopology=sde_dualpipe_dscmerge\n\
-                          mode_name=1080x2400x60cmd\ndsc_mode=0\ntopology=sde_singlepipe\n";
+    const P3Q: &str = "mode_name=1440x3200x60cmd\nbit_clk_rate=1360000000\ndsc_mode=1\ntopology=sde_dualpipe_dscmerge\n\
+                       mode_name=1440x3200x120cmd\nsubmode_idx=1\ndsc_mode=1\ntopology=sde_dualpipe_dscmerge\n\
+                       mode_name=1080x2400x60cmd\ndsc_mode=0\ntopology=sde_singlepipe\n";
 
     #[test]
     fn reads_the_topology_of_the_named_mode() {
-        assert_eq!(SdeMode::find(ISHTAR, "1440x3200x120cmd").unwrap(), SdeMode { mixers: 2, dsc: true });
-        assert_eq!(SdeMode::find(ISHTAR, "1080x2400x60cmd").unwrap(), SdeMode { mixers: 1, dsc: false });
-        assert!(SdeMode::find(ISHTAR, "1440x3200x90cmd").is_err());
+        assert_eq!(SdeMode::find(P3Q, "1440x3200x120cmd").unwrap(), SdeMode { mixers: 2, dsc: true });
+        assert_eq!(SdeMode::find(P3Q, "1080x2400x60cmd").unwrap(), SdeMode { mixers: 1, dsc: false });
+        assert!(SdeMode::find(P3Q, "1440x3200x90cmd").is_err());
     }
 }
 
@@ -771,8 +771,8 @@ pub mod kms {
         /// 13 ms, where coming on from off takes 158, most of it the panel
         /// waiting 120 ms after leaving sleep as its own commands say.
         /// Where the display driver has no low-power mode, the display
-        /// turns off. A touch controller that follows the panel, as
-        /// Xiaomi's do, rests with it either way.
+        /// turns off. A touch controller that follows the panel rests with
+        /// it either way.
         pub fn rest(&mut self) -> Result<()> {
             if self.power != Power::On {
                 return Ok(());

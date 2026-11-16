@@ -172,7 +172,88 @@ impl App {
         if charge > 0.0 {
             self.compose_charging(out, f, info, charge, now);
         }
+        // A panel lit by a key or a tap shows the lock screen over what the
+        // page showed, kept small and soft behind it.
+        if self.locked {
+            let day = self.today.clone();
+            self.compose_glass(out, f, info, clock, &day);
+        } else if self.display_on {
+            // Kept while no lock stands over the page, one pixel in
+            // `LOCK_STEP` of each way: the lock's picture behind itself.
+            self.behind = Some(out.thumbnail(LOCK_STEP));
+            self.glass = None;
+        }
         out.dim(self.curtain.level(now));
+    }
+
+    /// The lock screen over what the panel shows: the page it came over, one
+    /// pixel in `LOCK_STEP` of each way kept, softened three times over and
+    /// stretched back behind a veil, with the day, the time and the bar on
+    /// it. That picture is made once while the lock stands.
+    fn compose_glass(&mut self, out: &mut Canvas, f: &Fonts, info: &DeviceInfo, clock: &str, date: &str) {
+        let (w, h) = (out.w, out.h);
+        if self.glass.is_none() {
+            let t = self.theme();
+            let mut small = match &self.behind {
+                Some(page) => page.clone(),
+                None => Canvas::filled(w, h, t.pal.bg).thumbnail(LOCK_STEP),
+            };
+            // Three passes of a small blur are smoother than one of a large
+            // one, and cheaper than blurring the page whole.
+            soften(&mut small, 2);
+            let mut sheet = Canvas::new(w, h);
+            sheet.blit_scaled(&small, w, h);
+            let veil = match t.dark {
+                true => Rgba::rgb(0, 0, 0).with_alpha(96),
+                false => Rgba::rgb(250, 250, 252).with_alpha(110),
+            };
+            // A veil, blended over the picture rather than painted over it:
+            // the page behind is to be seen through it, softened.
+            sheet.shade_rows(0, h, |_, _| veil);
+            self.glass = Some(sheet);
+        }
+        if let Some(sheet) = &self.glass
+            && sheet.data.len() == out.data.len()
+        {
+            out.data.copy_from_slice(&sheet.data);
+        }
+        self.draw_lock(out, f, info, clock, date);
+    }
+
+    /// The day, the time, the battery and the bar, over whatever the panel
+    /// shows beneath them: the shell frosted that itself and lays this on.
+    pub fn draw_lock(&mut self, out: &mut Canvas, f: &Fonts, info: &DeviceInfo, clock: &str, date: &str) {
+        let (t, lang) = (self.theme(), self.state.lang);
+        let (w, h) = (out.w as f32, out.h as f32);
+        let line = h * 0.200;
+        let Ok(clock_face) = f.face(300.0) else { return };
+        let Ok(text_face) = f.face(400.0) else { return };
+        // The day, the time, and what the battery holds, all centred.
+        out.text_center(&text_face, date, w / 2.0, h * 0.130, h * 0.020, t.pal.text);
+        out.text_center(&clock_face, clock, w / 2.0, line, h * 0.082, t.pal.text);
+        if let Some(b) = &info.battery {
+            let percent = format!("{}%", b.level);
+            out.text_center(&text_face, &percent, w / 2.0, h * 0.268, h * 0.018, t.pal.subtitle);
+        }
+        // The bar the finger slides: a circle with an arrow at its left,
+        // and what sliding does beside it.
+        let bar_h = h * 0.062;
+        let bar_w = w * 0.80;
+        let (bar_x, bar_y) = ((w - bar_w) / 2.0, h - bar_h * 2.4);
+        out.fill_round_rect(bar_x, bar_y, bar_w, bar_h, bar_h / 2.0, t.pal.card);
+        // The knob follows the finger along the bar, from one end of it to
+        // the other.
+        let inset = bar_h * 0.55;
+        let travel = bar_w - inset * 2.0;
+        let (knob_cx, knob_cy) = (bar_x + inset + travel * self.lock_slide, bar_y + bar_h / 2.0);
+        out.fill_circle(knob_cx, knob_cy, bar_h * 0.40, t.pal.accent);
+        out.text_center(&text_face, "→", knob_cx, knob_cy, bar_h * 0.36, t.pal.card);
+        let hint = match lang {
+            crate::lang::Lang::Hans => "滑动解锁",
+            crate::lang::Lang::Hant => "滑動解鎖",
+            crate::lang::Lang::En => "Slide to unlock",
+        };
+        out.text_center(&text_face, hint, w / 2.0 + bar_h * 0.4, knob_cy, h * 0.019, t.pal.accent);
     }
 
     /// The charging screen, `level` of the way over the page drawn on `out`.
@@ -658,6 +739,40 @@ mod tests {
     use super::*;
     use crate::app::testing::*;
     use skyward_info::Charge;
+
+    #[test]
+    fn a_page_composed_into_a_canvas_is_not_blank() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut c = Canvas::new(W, H);
+        app.compose(&mut c, &f, &i, "09:22", 0);
+        assert!(c.sharpness() > 1000, "the page leaves ink: {}", c.sharpness());
+    }
+
+    #[test]
+    fn the_lock_screen_frosts_what_the_page_showed() {
+        fn sharpness(c: &Canvas) -> u64 {
+            let (w, h) = (c.w, c.h);
+            let mut sum = 0u64;
+            for y in (h * 55 / 100..h * 75 / 100).step_by(3) {
+                for x in (w / 10..w * 9 / 10).step_by(3) {
+                    sum += u64::from(c.pixel(x, y).r.abs_diff(c.pixel(x + 3, y).r));
+                }
+            }
+            sum
+        }
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut plain = Canvas::new(W, H);
+        app.compose(&mut plain, &f, &i, "09:22", 0);
+        app.wake_locked(1000);
+        let mut glass = Canvas::new(W, H);
+        app.compose(&mut glass, &f, &i, "09:22", 1000);
+        assert!(sharpness(&glass) * 3 < sharpness(&plain), "frosted {} against {} plain", sharpness(&glass), sharpness(&plain));
+        let (small, sheet) = app.lock_ink();
+        assert!(small > 0, "the page kept small has ink: {small}");
+        assert!(sheet > 0, "and so does the lock's own picture: {sheet}");
+    }
 
     #[test]
     fn a_page_drawn_a_band_at_a_time_is_the_page_drawn_whole() {

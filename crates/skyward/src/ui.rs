@@ -27,18 +27,15 @@ use skyward_sys::control::{Control, Request};
 use skyward_sys::Power;
 use skyward_files::Ownership;
 use skyward_block::usb::{self, Drive};
-use skyward_net::download::{self, Failure};
 use skyward_net::http::Servers;
-use skyward_net::release::{Installed, Release, Unanswered};
 use skyward_net::wlan::{Power as WlanPower, Stage as Joining, Wlan};
 use skyward_sys::sleep::{Sleeper, Slept};
 use skyward_sys::uevent;
 use skyward_systems::Who;
 use skyward_ui::app::{
-    App, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, DownloadEnd, Effect, EraseStop, FileKind, FileOp,
-    FileRow, FileTask, FsAction, FsRow, Have, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place,
-    RenameRefused, Screen, Shot, SkywardEnd, SkywardStage, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, DOWNLOADS,
-    INSTALL_UNFINISHED, USB_DRIVE,
+    App, Asked, BackupAt, BackupEnd, BackupEntry, BackupRefusal, ClashChoice, Data, Effect, EraseStop, FileKind, FileOp, FileRow, FileTask,
+    FsAction, FsRow, Held, ItemEnd, ItemState, JobEnd, Keys, MountFailure, Part, PartKind, PartStop, Place, RenameRefused, Screen, Shot,
+    SkywardEnd, SkywardStage, Target, UsbDrive, UsbLink, Wipe, DATA_OPENING, DATA_PARTITION, INSTALL_UNFINISHED, USB_DRIVE,
 };
 use skyward_ui::settings::Keeper;
 use skyward_ui::surface::kms::KmsSurface;
@@ -81,7 +78,7 @@ const SCREENSHOTS: &str = "DCIM/Screenshots";
 const HELD_SCREENSHOTS: &str = "/skyward/run/screenshots";
 
 /// The panel backlight under /sys/class/backlight.
-struct Backlight {
+pub(crate) struct Backlight {
     path: PathBuf,
     /// The raw level at the top of the slider: the panel's normal maximum.
     top: u32,
@@ -90,7 +87,7 @@ struct Backlight {
 }
 
 impl Backlight {
-    fn open() -> Result<Self> {
+    pub(crate) fn open() -> Result<Self> {
         let mut dirs: Vec<PathBuf> = fs::read_dir("/sys/class/backlight")
             .context("read /sys/class/backlight")?
             .map(|e| e.map(|e| e.path()))
@@ -117,7 +114,7 @@ impl Backlight {
 
     /// Light the panel at `level` of its normal maximum, or turn it off
     /// with `None`. The file is written only when the raw level changes.
-    fn show(&mut self, level: Option<f32>) -> Result<()> {
+    pub(crate) fn show(&mut self, level: Option<f32>) -> Result<()> {
         let raw = level.map_or(0, |v| ((v.clamp(0.0, 1.0) * self.top as f32).round() as u32).max(1));
         if raw != self.level {
             fs::write(&self.path, raw.to_string()).with_context(|| format!("write {}", self.path.display()))?;
@@ -130,18 +127,9 @@ impl Backlight {
 
 /// How a panel's node in the device tree may give its normal maximum: the
 /// property holding it, and the one holding the whole range on the same
-/// scale. The 13 Ultra's panel gives both on a finer scale of its own that
-/// spans the same light as the backlight's range; the 17 Ultra's gives them
-/// on the backlight's own scale. The panels of the Xiaomi 13 and 15, of the
-/// 14 and the K80 series and one of the K90's give it only as the level
-/// their factory tests drive the panel to, on the backlight's own scale:
-/// the 13 Ultra's panels give that level as well, and it comes to the same
-/// half of their range as the normal maximum they give.
-const NORMAL_MAX: [(&str, &str); 3] = [
-    ("mi,normal-max-brightness-clone", "mi,max-brightness-clone"),
-    ("mi,max-brightness-normal", "qcom,mdss-dsi-bl-max-level"),
-    ("mi,mdss-dsi-fac-bl-max-level", "qcom,mdss-dsi-bl-max-level"),
-];
+/// scale. The panels Samsung's phones carry give the standard Qualcomm
+/// maximum, which is the whole of the backlight's range.
+const NORMAL_MAX: [(&str, &str); 1] = [("qcom,mdss-dsi-bl-max-level", "qcom,mdss-dsi-bl-max-level")];
 
 /// The raw backlight level, out of `max`, at the panel's normal maximum.
 /// Above it the panel runs in high brightness mode, which the stock system
@@ -168,10 +156,10 @@ fn normal_max(max: u32) -> Result<u32> {
         let cell: [u8; 4] = bytes.as_slice().try_into().map_err(|_| anyhow!("{} is not one cell", path.display()))?;
         Ok(u32::from_be_bytes(cell))
     };
-    let (normal, full) = NORMAL_MAX
-        .iter()
-        .find(|(normal, _)| node.join(normal).exists())
-        .with_context(|| format!("panel {name} gives its normal maximum as none of {NORMAL_MAX:?}"))?;
+    let found = NORMAL_MAX.iter().find(|(normal, _)| node.join(normal).exists());
+    // Panels of other makers name no such pair: their backlight's own top is
+    // the normal maximum, and the whole scale is what the slider reaches.
+    let Some((normal, full)) = found else { return Ok(max) };
     let (normal, full) = (cell(normal)?, cell(full)?);
     ensure!(normal > 0 && normal <= full, "panel {name}: normal maximum {normal} out of {full}");
     Ok((f64::from(max) * f64::from(normal) / f64::from(full)).round() as u32)
@@ -936,7 +924,9 @@ fn read_folder(path: &Path) -> Result<Vec<FileRow>> {
 /// are started again from there whenever they end.
 fn read_mounts(services: &[Service]) -> Result<Vec<skyward_ui::app::MountRow>> {
     use skyward_ui::app::MountRow;
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+    // A phone that is not A/B has one slot, whose partitions carry no
+    // suffix at all.
+    let slot = skyward_vab::current_slot()?.unwrap_or(skyward_vab::Slot::A);
     let shown = skyward_vab::mounted_partitions(slot)?;
     let holders = skyward_block::mount::holders()?;
     let props = skyward_info::installed_props(slot)?;
@@ -945,7 +935,7 @@ fn read_mounts(services: &[Service]) -> Result<Vec<skyward_ui::app::MountRow>> {
     for base in skyward_vab::slot_bases(slot)? {
         let point = skyward_vab::mount_point(&base);
         let name = format!("{base}{}", slot.suffix());
-        let mounted = shown.iter().find(|m| m.partition == name);
+        let mounted = shown.iter().find(|m| m.partition == name || m.partition == base);
         let mut using = BTreeSet::new();
         if let Some(m) = mounted {
             using.extend(holders.get(&skyward_block::devnum(&m.device)?).into_iter().flatten().cloned());
@@ -1021,46 +1011,6 @@ fn wlan_worker(w: &Option<wlan::Worker>) -> Result<&wlan::Worker> {
     w.as_ref().context("the phone's WLAN is not brought up")
 }
 
-/// The installed system, as the update server is told of it.
-fn installed(cfg: &DeviceConfig, info: &skyward_info::DeviceInfo) -> Result<Installed> {
-    let slot = info.slot.context("only an A/B phone is updated")?;
-    let props = skyward_info::installed_props(slot)?;
-    let prop = |name: &str| props.get(name).cloned().with_context(|| format!("the installed system says no {name}"));
-    Ok(Installed {
-        device: prop("ro.product.mod_device")?,
-        version: prop(&cfg.device.os_version_prop)?,
-        android: prop("ro.build.version.release")?,
-        unlocked: skyward_block::boot_param("androidboot.flash.locked")?.as_deref() == Some("0"),
-    })
-}
-
-/// Where `release`'s full package is downloaded to.
-fn downloaded(release: &Release) -> PathBuf {
-    Path::new(skyward_crypto::data::SDCARD).join(DOWNLOADS).join(&release.name)
-}
-
-/// What internal storage holds of `release`'s full package; nothing while it
-/// cannot be read.
-fn have(app: &App, release: &Release) -> Have {
-    if !app.state.data.storage_open() {
-        return Have::Nothing;
-    }
-    let path = downloaded(release);
-    let size = |p: &Path| match fs::metadata(p) {
-        Ok(m) => Some(m.len()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => {
-            let _ = skyward_sys::kmsg(&format!("read {}: {e}", p.display()));
-            None
-        }
-    };
-    match (size(&path), size(&download::partial(&path))) {
-        (Some(whole), _) => Have::Whole(whole),
-        (None, Some(part)) => Have::Part(part),
-        (None, None) => Have::Nothing,
-    }
-}
-
 /// Wait until a device, the installer or the recovery socket has something,
 /// or `timeout_ms` passes.
 fn wait(fds: &[i32], timeout_ms: i32) -> Result<()> {
@@ -1120,6 +1070,8 @@ struct Pages<'a> {
     surface: KmsSurface,
     /// The frame last drawn.
     screen: Canvas,
+    /// The lock screen's picture was told of once already this time it stood.
+    lock_logged: bool,
     inputs: Inputs,
     started: Instant,
     /// Whether the wait for a touch panel to come up is over.
@@ -1130,6 +1082,8 @@ struct Pages<'a> {
     backlight: Backlight,
     keeper: Keeper,
     shown_clock: String,
+    /// The day the clock's time falls on, as the lock screen tells it.
+    shown_date: String,
     /// The page shown first, until it has been told it shows.
     arriving: Option<Incoming>,
     /// The readings are taken again on a thread of their own; those taken
@@ -1208,9 +1162,6 @@ struct Pages<'a> {
     /// The WLAN, on a phone whose driver the recovery brings up.
     wlan: Option<wlan::Worker>,
     scanned_at: Instant,
-    /// Asking the update server, and downloading the full package.
-    checker: Option<updates::Worker>,
-    downloader: Option<updates::Worker>,
     /// Asking GitHub for Skyward's newest release, and updating to it.
     skyward_checker: Option<updates::Worker>,
     skyward_updater: Option<updates::Worker>,
@@ -1275,13 +1226,18 @@ impl<'a> Pages<'a> {
         };
         let mut app = App::new(first, w, h, cfg.display.density as f32 / 160.0);
         app.set_screen_corners(cfg.display.corner_radius as f32);
+        // Where the brightness slider stands before any settings are kept:
+        // the configuration's own, on a panel whose range starts high.
+        if let Some(b) = cfg.display.brightness {
+            app.state.brightness = b.clamp(0.0, 1.0);
+        }
         // The settings kept from the starts before are back before the first
         // frame, and before file transfer starts with its switch and the time
         // zone. The pages speak the language chosen then, or else the one the
         // system named with the work it asks for, or the one the installed
         // system is built to start in, or else the one they last spoke.
         let kept = settings::read()?;
-        let locale = request.locale.as_deref().or(info.locale.as_deref());
+        let locale = request.locale.as_deref().or(cfg.device.lang.as_deref()).or(info.locale.as_deref());
         let named = locale.map(Lang::for_locale).transpose()?;
         app.take_settings(kept.settings(), named);
         let keeper = Keeper::new(&kept);
@@ -1375,6 +1331,7 @@ impl<'a> Pages<'a> {
             fonts,
             surface,
             screen,
+            lock_logged: false,
             inputs,
             started,
             touch_known: false,
@@ -1383,6 +1340,7 @@ impl<'a> Pages<'a> {
             backlight,
             keeper,
             shown_clock: String::new(),
+            shown_date: String::new(),
             arriving: Some(Incoming::Arrived),
             readings,
             read_at,
@@ -1417,8 +1375,6 @@ impl<'a> Pages<'a> {
             servers: Arc::new(Mutex::new(Vec::new())),
             wlan: None,
             scanned_at: Instant::now(),
-            checker: None,
-            downloader: None,
             skyward_checker: None,
             skyward_updater: None,
             shell: None,
@@ -1545,7 +1501,6 @@ impl<'a> Pages<'a> {
             self.wlan = Some(wlan::Worker::start(w.clone(), modules, libraries, self.servers.clone())?);
         }
         self.scanned_at = Instant::now();
-        self.app.state.update_server = cfg.update.is_some();
         self.drive_at = Instant::now();
         Ok(())
     }
@@ -1603,7 +1558,6 @@ impl<'a> Pages<'a> {
         self.systems_told(now)?;
         self.wlan_told()?;
         self.keep_settings(now)?;
-        self.updates_told(now)?;
         self.skyward_told(now)?;
         self.decrypt_told(now)?;
         self.shell_told()?;
@@ -1623,10 +1577,16 @@ impl<'a> Pages<'a> {
                 other => unreachable!("time passing asks for nothing but the motor, not {other:?}"),
             }
         }
-        let time = clock(self.app.state.time_zone)?;
+        let (zone, lang) = (self.app.state.time_zone, self.app.state.lang);
+        let time = clock(zone)?;
         if time != self.shown_clock {
             self.shown_clock = time;
             self.app.redraw();
+        }
+        let day = skyward_ui::fmt::date(lang, unix_now()?, zone);
+        if day != self.shown_date {
+            self.shown_date = day.clone();
+            self.app.set_today(day);
         }
         Ok(())
     }
@@ -1694,6 +1654,14 @@ impl<'a> Pages<'a> {
             if self.app.take_dirty() || !self.surface.is_on() {
                 let t0 = Instant::now();
                 self.app.compose(&mut self.screen, &self.fonts, &self.info, &self.shown_clock, now);
+                if self.app.locked() && !self.lock_logged {
+                    self.lock_logged = true;
+                    let (small, sheet) = self.app.lock_ink();
+                    skyward_sys::kmsg(&format!("the lock's small picture is {small} sharp, its own {sheet}"))?;
+                }
+                if !self.app.locked() {
+                    self.lock_logged = false;
+                }
                 self.surface.present(&self.screen)?;
                 eprintln!("frame {:?} in {} ms", self.app.screen(), t0.elapsed().as_millis());
                 if let Some(path) = self.dump {
@@ -1787,12 +1755,6 @@ impl<'a> Pages<'a> {
         if let Some(w) = &self.wlan {
             fds.push(w.fd());
         }
-        if let Some(c) = &self.checker {
-            fds.push(c.fd());
-        }
-        if let Some(d) = &self.downloader {
-            fds.push(d.fd());
-        }
         if let Some(c) = &self.skyward_checker {
             fds.push(c.fd());
         }
@@ -1821,8 +1783,6 @@ impl<'a> Pages<'a> {
             || self.merger.is_some()
             || self.decryptor.is_some()
             || self.part_worker.is_some()
-            || self.checker.is_some()
-            || self.downloader.is_some()
             || self.skyward_checker.is_some()
             || self.skyward_updater.is_some()
             || systems_busy;
@@ -2233,54 +2193,6 @@ impl Pages<'_> {
         Ok(())
     }
 
-    /// What asking the update server, and downloading the system's full
-    /// package, told.
-    fn updates_told(&mut self, now: u64) -> Result<()> {
-        let told = self.checker.as_ref().map(updates::Worker::events).unwrap_or_default();
-        let mut checked = false;
-        for ev in told {
-            let updates::Event::Checked(answer) = ev else { unreachable!("asking the server downloads nothing") };
-            let have = match &answer {
-                Ok(Some(release)) => have(&self.app, release),
-                _ => Have::Nothing,
-            };
-            self.app.update_checked(answer, have);
-            checked = true;
-        }
-        if checked {
-            self.checker = None;
-        }
-        let told = self.downloader.as_ref().map(updates::Worker::events).unwrap_or_default();
-        let mut fetched = false;
-        for ev in told {
-            match ev {
-                updates::Event::Progress(progress, rate) => self.app.download_progress(progress, rate),
-                updates::Event::Ended(end) => {
-                    let release = self.app.state.newest().context("a download is of the newest system")?.clone();
-                    let end = match end {
-                        updates::End::Downloaded => DownloadEnd::Downloaded,
-                        updates::End::Stopped => DownloadEnd::Stopped,
-                        updates::End::Failed(why) => DownloadEnd::Failed(why),
-                        updates::End::Updated(_) | updates::End::NotWritten(_) | updates::End::WriteFailed(..) => {
-                            unreachable!("a system's full package is only downloaded")
-                        }
-                    };
-                    skyward_sys::kmsg(&format!("downloading {} ended: {end:?}", release.name))?;
-                    let have = have(&self.app, &release);
-                    self.app.download_ended(end, have, now);
-                    fetched = true;
-                }
-                updates::Event::Checked(_) | updates::Event::SkywardChecked(_) | updates::Event::Writing { .. } => {
-                    unreachable!("a download asks nothing of its own, and writes nothing")
-                }
-            }
-        }
-        if fetched {
-            self.downloader = None;
-        }
-        Ok(())
-    }
-
     /// What asking GitHub for Skyward's newest release, and updating to it,
     /// told.
     fn skyward_told(&mut self, now: u64) -> Result<()> {
@@ -2314,7 +2226,7 @@ impl Pages<'_> {
                     self.app.skyward_ended(end, now);
                     updated = true;
                 }
-                updates::Event::Checked(_) | updates::Event::SkywardChecked(_) => unreachable!("an update asks nothing of its own"),
+                updates::Event::SkywardChecked(_) => unreachable!("an update asks nothing of its own"),
             }
         }
         if updated {
@@ -2456,7 +2368,21 @@ impl Pages<'_> {
                     skyward_sys::kmsg(&format!("asked on the recovery socket: {asked:?}"))?;
                     answer(asked, self.fastboot)
                 }
-                Incoming::Input(Event::Touch(t, at)) => self.app.touch(t, &self.fonts, at),
+                Incoming::Input(Event::Touch(t, at)) => {
+                    let lifted = matches!(t, skyward_ui::app::Touch::Up);
+                    let effects = self.app.touch(t, &self.fonts, at);
+                    // A tap that did something taps the motor too, as the
+                    // phone's own system does; one the pages tap for
+                    // themselves is left to them.
+                    if lifted
+                        && self.app.state.vibrate
+                        && self.app.tap_acted()
+                        && !effects.iter().any(|fx| matches!(fx, Effect::Haptic))
+                    {
+                        self.click()?;
+                    }
+                    effects
+                }
                 Incoming::Input(Event::Key(k, true)) => self.app.key(k, now),
                 Incoming::Input(Event::Key(k, false)) => self.app.key_up(k, now),
             };
@@ -2584,10 +2510,13 @@ impl Pages<'_> {
             }
             Effect::StopBackup => self.backuper.as_ref().context("there is no backup or restore to stop")?.stop(),
             Effect::ReadUpdate => {
-                let slot = self.info.slot.context("only an A/B phone has an update to merge")?;
-                // A merge followed tells where it stands itself.
-                if self.merger.is_none() {
-                    self.app.set_update(skyward_vab::standing(slot)?);
+                // A phone that is not A/B keeps no other slot to update into:
+                // the page reads and says so instead of ending the recovery.
+                if let Some(slot) = self.info.slot {
+                    // A merge followed tells where it stands itself.
+                    if self.merger.is_none() {
+                        self.app.set_update(skyward_vab::standing(slot)?);
+                    }
                 }
                 // An update in the other slot starts with that slot,
                 // which a system's updater may not have set yet.
@@ -2608,9 +2537,6 @@ impl Pages<'_> {
                 wlan_worker(&self.wlan)?.send(wlan::Command::Join { ssid, name, security, password: password.0 })
             }
             Effect::LeaveWlan => wlan_worker(&self.wlan)?.send(wlan::Command::Leave),
-            Effect::CheckUpdate => self.check_update()?,
-            Effect::Download(release) => self.download(release, now)?,
-            Effect::StopDownload => self.downloader.as_ref().context("there is no download to stop")?.stop(),
             Effect::CheckSkyward => {
                 ensure!(self.skyward_checker.is_none(), "GitHub is being asked already");
                 let probe = cfg.wlan.as_ref().context("the phone's WLAN is not brought up")?.probe.clone();
@@ -2933,39 +2859,6 @@ impl Pages<'_> {
         };
         self.backuper = Some(backup::Worker::start(backup::Task::Restore(task))?);
         self.app.backup_started(true, place, true);
-        Ok(())
-    }
-
-    /// Ask the update server for the newest system. What the installed
-    /// system is called is the page's to report when it cannot be read.
-    fn check_update(&mut self) -> Result<()> {
-        ensure!(self.checker.is_none(), "the update server is being asked already");
-        let server = self.cfg.update.as_ref().context("the phone's update server is not known")?.server.clone();
-        let probe = self.cfg.wlan.as_ref().context("the phone's WLAN is not brought up")?.probe.clone();
-        match installed(self.cfg, &self.info) {
-            Ok(installed) => {
-                self.checker = Some(updates::Worker::start(updates::Task::Check { server, probe, installed }, self.servers.clone())?)
-            }
-            Err(e) => self.app.update_checked(Err(Unanswered::Failed(format!("{e:#}"))), Have::Nothing),
-        }
-        Ok(())
-    }
-
-    /// Download `release`'s full package into internal storage.
-    fn download(&mut self, release: Release, now: u64) -> Result<()> {
-        ensure!(self.downloader.is_none(), "the full package is being downloaded already");
-        let server = self.cfg.update.as_ref().context("the phone's update server is not known")?.server.clone();
-        let path = downloaded(&release);
-        match installed(self.cfg, &self.info) {
-            Ok(installed) => {
-                let task = updates::Task::Download { server, installed, release, path };
-                self.downloader = Some(updates::Worker::start(task, self.servers.clone())?);
-            }
-            Err(e) => {
-                let have = have(&self.app, &release);
-                self.app.download_ended(DownloadEnd::Failed(Failure::Other(format!("{e:#}"))), have, now);
-            }
-        }
         Ok(())
     }
 

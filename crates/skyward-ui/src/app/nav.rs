@@ -306,16 +306,8 @@ impl App {
                 }
             }
             Screen::Decrypt if matches!(self.state.data, Data::Closed | Data::Failed(_)) => self.open_data(),
-            // As the stock updater does, the page asks the update server as
-            // it opens, once a network is joined and nothing has been heard.
-            Screen::Update => {
-                let mut fx = vec![Effect::ReadUpdate];
-                if self.state.update_server && matches!(self.state.check, Check::Idle | Check::Failed(_)) && self.state.online() {
-                    self.state.check = Check::Asking;
-                    fx.push(Effect::CheckUpdate);
-                }
-                fx
-            }
+            // The page reads where an update the system installed stands.
+            Screen::Update => vec![Effect::ReadUpdate],
             // Skyward's own page asks GitHub the same way.
             Screen::SkywardUpdate if matches!(self.state.skyward_check, SkywardCheck::Idle | SkywardCheck::Failed(_)) && self.state.online() => {
                 self.state.skyward_check = SkywardCheck::Asking;

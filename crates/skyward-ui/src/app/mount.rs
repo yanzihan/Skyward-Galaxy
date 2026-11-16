@@ -100,7 +100,7 @@ mod tests {
     fn a_partition_in_use_cannot_be_unmounted() {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Mount, &f, &i);
-        let held = vec!["touch_report".to_string(), "touchsensor".to_string()];
+        let held = vec!["qseecomd".to_string()];
         app.set_mounts(Ok(vec![
             MountRow { base: "odm".into(), point: "/odm".into(), mounted: true, holders: held },
             MountRow { base: "vendor".into(), point: "/vendor".into(), mounted: true, holders: Vec::new() },

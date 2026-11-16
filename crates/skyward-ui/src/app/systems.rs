@@ -165,7 +165,7 @@ mod tests {
     /// The systems with a second one installed, the main one starting.
     fn two_systems() -> Overview {
         Overview {
-            installed: skyward_systems::Named { name: "HyperOS 3".into(), version: Some("OS3.0.308.0.WMACNXM".into()) },
+            installed: skyward_systems::Named { name: "One UI 8.0".into(), version: Some("G9980ZHSGHZB1".into()) },
             other: Some(skyward_systems::Other { id: "ubuntu".into(), name: "Ubuntu Touch".into(), version: "24.04".into(), size: 16 << 30 }),
             other_starts: false,
             changed: false,

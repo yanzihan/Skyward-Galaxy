@@ -12,7 +12,7 @@ use std::path::{Component, Path};
 
 // The file manager's list as the stock file manager draws a folder: rows
 // laid straight on the page, under a path of capsules. Sizes are dp,
-// measured on a Xiaomi 17 Ultra.
+// measured on a Galaxy S20+ 5G.
 
 /// Where the path strip starts on an unscrolled page; scrolled up to the
 /// bar, it stays right under it.
@@ -514,7 +514,7 @@ mod tests {
     fn a_file_is_typed_by_its_extension_in_any_case() {
         let typed = [
             ("boot.img", FileType::DiskImage),
-            ("OTA_ishtar.ZIP", FileType::Archive),
+            ("OTA_p3q.ZIP", FileType::Archive),
             ("rootfs.tar.gz", FileType::Archive),
             ("IMG_0001.HEIC", FileType::Picture),
             ("clip.mkv", FileType::Video),

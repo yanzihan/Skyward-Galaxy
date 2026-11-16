@@ -2195,6 +2195,9 @@ pub fn section_action(c: &mut Canvas, t: &Theme, f: &Fonts, prev_bottom: f32, la
 /// Centred lettering with its cap line at `cap_top`, as ink whose colour
 /// comes from the field under it.
 pub fn wordmark(t: &Theme, f: &Fonts, text: &str, cap_top: f32, px: f32) -> Sprite {
+    // A whole-pixel em, as the typeface is drawn wrong at some fractional
+    // ones, where a letter can come out cut.
+    let px = px.round();
     let face = &f.display;
     let w = Canvas::new(0, 0).text_width(face, text, px);
     let x = (t.m.w as f32 - w) / 2.0;
@@ -3002,7 +3005,7 @@ mod tests {
     #[test]
     fn the_search_cursor_stands_where_the_stock_field_puts_it() {
         let f = crate::font::bundled();
-        // A Xiaomi 13 Ultra panel.
+        // A Galaxy S21 Ultra 5G panel.
         let t = Theme::light(1440, 3200, 3.5);
         let (x, w, cy) = (t.m.dp(48.0), t.m.dp(340.0), t.m.dp(60.0));
         let px = t.m.row_title_px;

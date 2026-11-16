@@ -5,9 +5,60 @@ use super::*;
 
 impl App {
     pub fn touch(&mut self, ev: Touch, f: &Fonts, now: u64) -> Vec<Effect> {
+        // A finger landing starts a new tap: nothing has been set off by it
+        // until it lifts on something.
+        if matches!(ev, Touch::Down(..)) {
+            self.tap_acted = false;
+        }
         // A finger on the dark panel lights nothing, as on the phone's own
-        // system, where the power key lights it.
+        // system, where the power key lights it; two taps in quick
+        // succession light it, as the phone's system does too.
         if !self.display_on {
+            if matches!(ev, Touch::Down(..)) {
+                let quick = self.dark_tap.is_some_and(|at| now.saturating_sub(at) <= DOUBLE_TAP_MS);
+                if quick {
+                    self.dark_tap = None;
+                    self.wake_locked(now);
+                } else {
+                    self.dark_tap = Some(now);
+                }
+            }
+            return Vec::new();
+        }
+        // The lock screen takes the finger that takes it away, and nothing
+        // else; the tap that lit the panel lifts too, and only keeps it lit.
+        // The bar's knob follows the finger, and past most of the way the
+        // finger lets it go unlocked.
+        if self.locked {
+            match ev {
+                Touch::Down(x, _) => {
+                    self.lock_from = Some(x);
+                    self.lock_slide = 0.0;
+                }
+                Touch::Move(x, _) => {
+                    if let Some(from) = self.lock_from {
+                        let span = self.w as f32 * 0.55;
+                        let slide = ((x - from) / span).clamp(0.0, 1.0);
+                        if (slide - self.lock_slide).abs() > 0.001 {
+                            self.lock_slide = slide;
+                            self.dirty = true;
+                        }
+                    }
+                }
+                Touch::Up => {
+                    // The bar unlocks only all the way across, and taps the
+                    // motor as it does; a tap that did not slide leaves the
+                    // lock screen where it stands.
+                    let took = self.lock_slide >= 0.97;
+                    self.lock_from = None;
+                    self.lock_slide = 0.0;
+                    if took {
+                        self.unlock_panel(now);
+                        return vec![Effect::Haptic];
+                    }
+                    self.dirty = true;
+                }
+            }
             return Vec::new();
         }
         // A finger on the charging screen sends it away for the page, and
@@ -207,6 +258,9 @@ impl App {
                     if let Some(p) = &mut self.row_press {
                         p.lift(now);
                     }
+                    // The tap did something, whether or not it asked for an
+                    // effect of its own; the shell taps the motor for it.
+                    self.tap_acted = true;
                     fx.extend(self.act(a, now));
                 }
                 Drag::Press { x, y, action: None, .. } if self.screen() == Screen::Editor => self.place_caret(f, x, y + scroll),
@@ -320,6 +374,13 @@ impl App {
         self.dirty = true;
     }
 
+    /// Whether the tap that ended last set something off: the shell taps the
+    /// motor for it, as the phone's own system does for a press that does
+    /// something.
+    pub fn tap_acted(&self) -> bool {
+        self.tap_acted
+    }
+
     /// A button went down. With the keys working the page, the volume keys
     /// move the light from control to control and the power key works the
     /// one lit as it comes back up; otherwise the first volume press lights
@@ -342,7 +403,7 @@ impl App {
             // The power key lights the dark panel, and does only that, as on
             // the phone's own system; the other keys leave it dark.
             if key == Key::Power {
-                self.wake(now);
+                self.wake_locked(now);
             }
             self.button = Some((key, Press::Spent));
             return fx;

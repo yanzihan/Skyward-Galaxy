@@ -315,7 +315,7 @@ mod tests {
             plugged: false,
         };
         let i = DeviceInfo {
-            os_version: Some("OS3.0.305.0.WMACNXM".into()),
+            os_version: Some("G9980ZHSGHZB1".into()),
             android: Some("16".into()),
             battery: Some(battery),
             ..info()

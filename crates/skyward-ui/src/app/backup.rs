@@ -215,8 +215,8 @@ mod tests {
             made,
             size: 6_200_000_000,
             parts,
-            device: "ishtar".into(),
-            system: Some("OS3.0.305.0.WMACNXM".into()),
+            device: "p3q".into(),
+            system: Some("G9980ZHSGHZB1".into()),
             slot: Some(Slot::B),
         };
         BackupEntry { place, name: fmt::stamp(made, 0), held: Ok(held) }

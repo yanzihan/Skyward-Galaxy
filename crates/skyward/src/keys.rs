@@ -4,7 +4,7 @@
 //! them, so no phone is told of them by hand, and a system that names them
 //! otherwise after an update is followed as it is.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use skyward_config::Service;
 use skyward_programs::naming::{self, Does};
 use skyward_programs::phone::{self, Partition, Phone, PARTITIONS};
@@ -34,6 +34,22 @@ pub struct Found {
 /// against are opened, on a phone that carries them as a bundle of their
 /// own: each of its programs is given the folder among its own.
 pub fn found(slot: skyward_vab::Slot, libraries: Option<&Path>) -> Result<Found> {
+    // Which copy of libbinder the recovery ramdisk carries decides the mark
+    // every call to the service directory has to bear, and the directory is
+    // the first thing the key services are asked of.
+    match skyward_binder::driver::Binder::open() {
+        Ok(binder) => match skyward_binder::service::choose_header(&binder) {
+            Ok(header) => {
+                let _ = skyward_sys::kmsg(&format!("the service directory reads the header {header:#x}"));
+            }
+            Err(e) => {
+                let _ = skyward_sys::kmsg(&format!("the service directory takes neither header mark: {e:#}"));
+            }
+        },
+        Err(e) => {
+            let _ = skyward_sys::kmsg(&format!("the driver the service directory answers on is not open: {e:#}"));
+        }
+    }
     let mut phone = read(slot, libraries)?;
     let unnamed = naming::steps(&phone)?;
     if !unnamed.is_empty() {
@@ -54,8 +70,16 @@ fn read(slot: skyward_vab::Slot, libraries: Option<&Path>) -> Result<Phone> {
     let mut partitions = Vec::new();
     for name in PARTITIONS {
         let named = format!("{name}{}", slot.suffix());
-        let partition = mounted.iter().find(|m| m.partition == named).with_context(|| format!("{named} is not mounted"))?;
-        partitions.push(Partition::mounted(name, &partition.mount_point));
+        // A phone that is not A/B names its partitions with no suffix, and a
+        // phone may keep no scripts on one of them at all, as this one keeps
+        // none on system_ext.
+        let found = mounted.iter().find(|m| m.partition == named || m.partition == *name);
+        match found {
+            Some(partition) => partitions.push(Partition::mounted(name, &partition.mount_point)),
+            None => {
+                let _ = skyward_sys::kmsg(&format!("{named} is not mounted, and the scripts on it are not read"));
+            }
+        }
     }
     Phone::read(partitions, properties, libraries)
 }

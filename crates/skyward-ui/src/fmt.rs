@@ -12,7 +12,7 @@ use skyward_install::ota::Trouble;
 use skyward_install::{Failure, ImageKind, Ramdisk, Refusal};
 use skyward_net::download::Failure as DownloadFailure;
 use skyward_net::reach::Reach;
-use skyward_net::release::Unanswered;
+use skyward_net::Unanswered;
 use skyward_net::supplicant::Security;
 use skyward_net::wlan::{Bands, Joined, Power, Stage as WlanStage, Wlan};
 use skyward_vab::{Hold, Slot, SnapshotState, Standing};
@@ -1334,7 +1334,7 @@ pub fn reach(l: Lang, reach: &Reach) -> Option<String> {
     }
 }
 
-/// Why the update server gave no answer, as the update page says it.
+/// Why GitHub gave no answer, as the Skyward update page says it.
 pub fn unanswered(l: Lang, why: &Unanswered) -> String {
     let login = l.pick(LOGIN);
     match why {
@@ -1351,37 +1351,6 @@ pub fn unanswered(l: Lang, why: &Unanswered) -> String {
             "Couldn't check for updates. The Wi-Fi network joined doesn't reach the internet: {why}"
         ),
         Unanswered::Failed(why) => tr!(l, "检查更新失败：{why}", "檢查更新失敗：{why}", "Couldn't check for updates: {why}"),
-    }
-}
-
-/// A size the update server gives, such as 7.1G, with its unit spelled
-/// out; one in another form shows as it came.
-pub fn package_size(size: &str) -> String {
-    match size.char_indices().last() {
-        Some((at, unit @ ('K' | 'M' | 'G' | 'T'))) if size[..at].parse::<f64>().is_ok() => format!("{} {unit}B", &size[..at]),
-        _ => size.to_string(),
-    }
-}
-
-/// Why downloading the full package did not end with it whole.
-pub fn download_failure(l: Lang, f: &DownloadFailure) -> String {
-    match f {
-        DownloadFailure::NoRoom { needed, free } => {
-            let (needed, free) = (file_size(*needed), file_size(*free));
-            tr!(
-                l,
-                "内部存储空间不足，需 {needed} 可用空间，当前可用 {free}。",
-                "內部儲存空間不足，需要 {needed} 的可用空間，目前可用 {free}。",
-                "Not enough internal storage: {needed} has to be free, and {free} is."
-            )
-        }
-        DownloadFailure::Damaged => l
-            .pick(["完整更新包校验失败，已删除，请重新下载。", "完整更新檔驗證失敗，已刪除，請重新下載。", "The full OTA package didn't verify and was deleted. Download it again."])
-            .into(),
-        DownloadFailure::Changed => {
-            l.pick(["服务器上的版本已更新，请重新检查更新。", "伺服器上的版本已更新，請重新檢查更新。", "The server has a newer version now. Check for updates again."]).into()
-        }
-        DownloadFailure::Other(why) => tr!(l, "下载失败：{why}", "下載失敗：{why}", "Download failed: {why}"),
     }
 }
 
@@ -1514,9 +1483,9 @@ mod tests {
 
     const HANS: Lang = Lang::Hans;
 
-    // Xiaomi 13 Ultra (ishtar, 16 GB + 512 GB): readings from `skyward info`
+    // Galaxy S21 Ultra 5G (p3q, 16 GB + 512 GB): readings from `skyward info`
     // and the strings its stock About pages print for them.
-    // Xiaomi 17 Ultra (nezha, 16 GB + 1 TB): MemTotal from its boot log and
+    // Galaxy S20+ 5G (y2q, 16 GB + 1 TB): MemTotal from its boot log and
     // the userdata size from `fastboot getvar all`.
     #[test]
     fn ram_rounds_to_module_size() {
@@ -1526,27 +1495,27 @@ mod tests {
 
     #[test]
     fn storage_matches_the_stock_settings() {
-        let ishtar = Storage { total: 496_550_785_024, free: Some(61_300_000_000) };
-        assert_eq!(capacity(ishtar.total), "512GB");
-        assert_eq!(storage_used(&ishtar).unwrap(), "450.7GB/512GB");
+        let p3q = Storage { total: 496_550_785_024, free: Some(61_300_000_000) };
+        assert_eq!(capacity(p3q.total), "512GB");
+        assert_eq!(storage_used(&p3q).unwrap(), "450.7GB/512GB");
         assert_eq!(capacity(0xF2_091F_B000), "1TB");
         assert_eq!(storage_used(&Storage { total: 1, free: None }), None);
     }
 
     #[test]
     fn cpu_summary() {
-        let nezha = Cpu { cores: 8, max_khz: Some(4_608_000) };
+        let y2q = Cpu { cores: 8, max_khz: Some(4_608_000) };
         assert_eq!(cpu(HANS, &Cpu { cores: 8, max_khz: Some(3_187_200) }), "八核 最高 3.19GHz");
-        assert_eq!(cpu(HANS, &nezha), "八核 最高 4.61GHz");
+        assert_eq!(cpu(HANS, &y2q), "八核 最高 4.61GHz");
         assert_eq!(cpu(HANS, &Cpu { cores: 2, max_khz: None }), "双核");
         assert_eq!(cpu(Lang::Hant, &Cpu { cores: 2, max_khz: None }), "雙核");
-        assert_eq!(cpu(Lang::En, &nezha), "Octa-core, up to 4.61GHz");
+        assert_eq!(cpu(Lang::En, &y2q), "Octa-core, up to 4.61GHz");
         assert_eq!(cpu(Lang::En, &Cpu { cores: 12, max_khz: None }), "12-core");
         assert_eq!(numeral(12, false), "十二");
         assert_eq!(numeral(20, false), "二十");
     }
 
-    // Xiaomi 13 Ultra battery as `skyward info` read it.
+    // Galaxy S21 Ultra 5G battery as `skyward info` read it.
     #[test]
     fn battery_lines() {
         let b = Battery {
@@ -1571,7 +1540,7 @@ mod tests {
         assert_eq!(volts(b.voltage.unwrap()), "4.48V");
     }
 
-    // Xiaomi 17 Ultra build and panel, as its stock settings print them.
+    // Galaxy S20+ 5G build and panel, as its stock settings print them.
     #[test]
     fn versions_and_states() {
         let patch = PatchLevel { year: 2026, month: 10, day: 1 };
@@ -1579,8 +1548,8 @@ mod tests {
         assert_eq!(android(Lang::Hant, "17", Some(&patch)), "17 | Android 安全性更新：2026年10月1日");
         assert_eq!(android(Lang::En, "17", Some(&patch)), "17 | Android security update: October 1, 2026");
         assert_eq!(panel((1200, 2608)), "2608 x 1200");
-        assert_eq!(model_lines("Xiaomi 17 Ultra by Leica"), "Xiaomi 17 Ultra\nby Leica");
-        assert_eq!(model_lines("Xiaomi 17 Ultra"), "Xiaomi 17 Ultra");
+        assert_eq!(model_lines("Galaxy S20+ 5G by Leica"), "Galaxy S20+ 5G\nby Leica");
+        assert_eq!(model_lines("Galaxy S20+ 5G"), "Galaxy S20+ 5G");
         assert_eq!(inches(6.9), "6.9″");
         assert_eq!(verified(HANS, "orange"), "橙色 · 设备已解锁，不验证系统");
         assert_eq!(health(Lang::En, "Watchdog timer expire"), "Watchdog timer expire");
@@ -1592,7 +1561,7 @@ mod tests {
         assert_eq!(bytes(100_663_296), "100.7MB");
         assert_eq!(bytes(131_072), "131KB");
         assert_eq!(bytes(64), "64B");
-        // The Xiaomi 13 Ultra's installed system, by its ro.build.date.utc.
+        // The Galaxy S21 Ultra 5G's installed system, by its ro.build.date.utc.
         assert_eq!(date(HANS, 1_778_243_655, 0), "2026年5月8日");
         assert_eq!(date(Lang::En, 1_778_243_655, 0), "May 8, 2026");
         assert_eq!(date(HANS, 0, 0), "1970年1月1日");
@@ -1753,41 +1722,41 @@ mod tests {
     #[test]
     fn reasons_read_as_sentences() {
         let pc = Source::Computer;
-        assert_eq!(refusal(HANS, &Refusal::OtherDevice("nezha".into()), "ishtar", pc, 0), "该更新包适用于 nezha，本机为 ishtar。");
+        assert_eq!(refusal(HANS, &Refusal::OtherDevice("y2q".into()), "p3q", pc, 0), "该更新包适用于 y2q，本机为 p3q。");
         assert_eq!(
-            refusal(HANS, &Refusal::Older { package: 1_770_000_000, installed: 1_778_243_655 }, "ishtar", pc, 0),
+            refusal(HANS, &Refusal::Older { package: 1_770_000_000, installed: 1_778_243_655 }, "p3q", pc, 0),
             "该更新包的构建日期为 2026年2月2日，早于当前系统的 2026年5月8日。"
         );
         assert_eq!(
-            refusal(Lang::En, &Refusal::Older { package: 1_770_000_000, installed: 1_778_243_655 }, "ishtar", pc, 0),
+            refusal(Lang::En, &Refusal::Older { package: 1_770_000_000, installed: 1_778_243_655 }, "p3q", pc, 0),
             "This package was built on February 2, 2026, before the current system, built on May 8, 2026."
         );
-        assert_eq!(refusal(HANS, &Refusal::Battery { level: 12, charging: true }, "ishtar", pc, 0), "电量仅剩 12%，请充电至 15% 以上后重试。");
+        assert_eq!(refusal(HANS, &Refusal::Battery { level: 12, charging: true }, "p3q", pc, 0), "电量仅剩 12%，请充电至 15% 以上后重试。");
         assert_eq!(
-            refusal(HANS, &Refusal::Pending(SnapshotState::Snapshotted), "ishtar", pc, 0),
+            refusal(HANS, &Refusal::Pending(SnapshotState::Snapshotted), "p3q", pc, 0),
             "更新已写入，等待合并。请重启到系统，完成上一次更新后重试。"
         );
         assert_eq!(
-            refusal(Lang::En, &Refusal::Pending(SnapshotState::Snapshotted), "ishtar", pc, 0),
+            refusal(Lang::En, &Refusal::Pending(SnapshotState::Snapshotted), "p3q", pc, 0),
             "Update written, waiting to merge. Reboot to the system to finish the last update, then try again."
         );
         assert_eq!(failure(HANS, &Failure::Engine(26), pc), ("更新包签名验证失败，请发送官方更新包。".into(), Some("错误代码：26".into())));
         assert_eq!(failure(Lang::Hant, &Failure::Engine(26), pc), ("更新檔簽章驗證失敗，請傳送官方更新檔。".into(), Some("錯誤代碼：26".into())));
         assert_eq!(failure(HANS, &Failure::Error("open ep0: busy".into()), pc).1.as_deref(), Some("open ep0: busy"));
         assert_eq!(failure(HANS, &Failure::Script(1), pc), ("安装脚本运行失败，退出码为 1。".into(), None));
-        assert_eq!(refusal(HANS, &Refusal::Unsigned, "ishtar", pc, 0), "该刷机包未签名，请关闭「验证刷机包签名」后重试。");
-        assert_eq!(refusal(HANS, &Refusal::Unverified, "ishtar", pc, 0), "该刷机包未通过签名验证，请关闭「验证刷机包签名」后重试。");
+        assert_eq!(refusal(HANS, &Refusal::Unsigned, "p3q", pc, 0), "该刷机包未签名，请关闭「验证刷机包签名」后重试。");
+        assert_eq!(refusal(HANS, &Refusal::Unverified, "p3q", pc, 0), "该刷机包未通过签名验证，请关闭「验证刷机包签名」后重试。");
     }
 
     #[test]
     fn a_file_chosen_is_answered_with_choosing_another() {
         let file = Source::File(Place::Storage);
-        assert_eq!(refusal(HANS, &Refusal::Unknown, "ishtar", file, 0), "无法识别该文件，请选择 A/B 完整更新包、刷机包或分区镜像。");
+        assert_eq!(refusal(HANS, &Refusal::Unknown, "p3q", file, 0), "无法识别该文件，请选择 A/B 完整更新包、刷机包或分区镜像。");
         assert_eq!(
-            refusal(Lang::En, &Refusal::Unknown, "ishtar", file, 0),
+            refusal(Lang::En, &Refusal::Unknown, "p3q", file, 0),
             "This file isn't recognized. Choose an A/B full OTA package, a flashable zip or a partition image."
         );
-        assert_eq!(refusal(HANS, &Refusal::Incremental, "ishtar", file, 0), "无法安装增量更新包，请选择完整更新包。");
+        assert_eq!(refusal(HANS, &Refusal::Incremental, "p3q", file, 0), "无法安装增量更新包，请选择完整更新包。");
         assert_eq!(failure(HANS, &Failure::Engine(26), file).0, "更新包签名验证失败，请选择官方更新包。");
         assert_eq!(failure(HANS, &Failure::Changed, file).0, "文件在读取过程中被修改，请重新选择。");
         let gone = "read /sdcard/Download/ota.zip: Input/output error (os error 5)";
@@ -1888,7 +1857,7 @@ mod tests {
         assert_eq!(reach(HANS, &Reach::Offline("no answer in 5 s".into())).as_deref(), Some("该网络无法访问互联网：no answer in 5 s"));
         assert!(unanswered(HANS, &Unanswered::Login).starts_with("检查更新失败，当前 WLAN 需要先在网页上登录"));
         assert!(unanswered(Lang::En, &Unanswered::Login).starts_with("Couldn't check for updates. The Wi-Fi network joined needs a sign-in in a browser"));
-        assert_eq!(unanswered(HANS, &Unanswered::Offline("could not reach connect.rom.miui.com".into())), "检查更新失败，当前 WLAN 无法访问互联网：could not reach connect.rom.miui.com");
+        assert_eq!(unanswered(HANS, &Unanswered::Offline("could not reach api.github.com".into())), "检查更新失败，当前 WLAN 无法访问互联网：could not reach api.github.com");
         assert_eq!(unanswered(HANS, &Unanswered::Failed("io: received fatal alert: HandshakeFailure".into())), "检查更新失败：io: received fatal alert: HandshakeFailure", "a network that reaches the internet leaves how asking failed");
     }
 

@@ -2,7 +2,7 @@
 //! and the clock do to it, and what it asks of the runtime in return. Each
 //! page's own types, methods and tests are in the module named for it.
 
-use crate::canvas::{Canvas, Run};
+use crate::canvas::{soften, Canvas, Run};
 use crate::charge;
 use crate::color::Rgba;
 use crate::editor::{self, Editor};
@@ -27,7 +27,7 @@ use skyward_info::DeviceInfo;
 use skyward_install::{Event, ImageKind, Outcome, Reflash, Refusal, Stage};
 use skyward_net::download::{Failure, Progress};
 use skyward_net::github::{Build, Newest};
-use skyward_net::release::{Release, Unanswered};
+use skyward_net::Unanswered;
 use skyward_net::supplicant::Security;
 use skyward_net::wlan::{Joined, Network, Power, Stage as Joining, Traffic, Wlan};
 use skyward_systems::{Overview, Who};
@@ -57,7 +57,6 @@ mod systems;
 mod terminal;
 #[cfg(test)]
 mod testing;
-mod update;
 mod wipe;
 mod wlan;
 
@@ -76,7 +75,6 @@ pub use skyward::*;
 pub use state::*;
 pub use systems::*;
 pub use terminal::*;
-pub use update::*;
 pub use wipe::*;
 pub use wlan::*;
 
@@ -265,6 +263,9 @@ pub enum Action {
     Dismiss,
     /// Keep the screen on for this choice in [`SCREEN_OFF`].
     ScreenOff(usize),
+    /// Turn the panel off at once, behind the lock screen, as the power key
+    /// does when held.
+    LockPanel,
     /// Keep the time zone at this place in [`TIME_ZONES`].
     TimeZone(usize),
     /// Speak this language.
@@ -367,14 +368,6 @@ pub enum Action {
     PickSecurity(Security),
     /// Close the list open over the page, choosing nothing.
     CloseChoices,
-    /// Ask the update server for the newest system.
-    CheckUpdate,
-    /// Download the newest system's full package, or carry on downloading
-    /// it.
-    Download,
-    StopDownload,
-    /// Install the full package downloaded.
-    InstallDownloaded,
     /// Ask GitHub for Skyward's newest release.
     CheckSkyward,
     /// Download the newest release's build for the phone and write it into
@@ -571,13 +564,6 @@ pub enum Effect {
     ScanWlan,
     JoinWlan { ssid: Vec<u8>, name: String, security: Security, password: Secret },
     LeaveWlan,
-    /// Ask the update server for the newest system, telling what it
-    /// answered with [`App::update_checked`].
-    CheckUpdate,
-    /// Download `release`'s full package into [`DOWNLOADS`], telling how it
-    /// goes with [`App::download_progress`] and [`App::download_ended`].
-    Download(Release),
-    StopDownload,
     /// Ask GitHub for Skyward's newest release, telling what it answered
     /// with [`App::skyward_checked`].
     CheckSkyward,
@@ -653,7 +639,7 @@ const TOAST_MS: u64 = 2000;
 const BLINK_MS: u64 = 500;
 /// The spring the home page's search bar moves to the search page's field
 /// on, and back: critically damped, fitted to frames of the stock settings
-/// on a Xiaomi 17 Ultra.
+/// on a Galaxy S20+ 5G.
 const MORPH_PERIOD: f32 = 0.292;
 /// Along the move, from 0 at the home page to 1 at the search page: where
 /// the large title has faded away, and the stretch over which the button
@@ -670,8 +656,8 @@ const MORPH_BODY_MS: (u64, u64) = (380, 120);
 /// the row never shows pressed.
 const ROW_PRESS_DELAY_MS: u64 = 90;
 /// The spring a row held down darkens on, and fades back on once let go:
-/// critically damped, fitted to frames of the stock settings on a Xiaomi
-/// 17 Ultra.
+/// critically damped, fitted to frames of the stock settings on the
+/// reference panel.
 const ROW_PRESS_PERIOD: f32 = 0.18;
 /// A row let go before it showed pressed shows pressed from the lift this
 /// long, as Android shows a quick tap.
@@ -679,7 +665,7 @@ const QUICK_TAP_MS: u64 = 64;
 /// A page opening slides in on a critically damped spring of this period,
 /// set off already moving this fast, in screen widths a second; a page
 /// going back slides off on a spring of this period, from rest. Both fitted
-/// to frames of the stock settings on a Xiaomi 17 Ultra.
+/// to frames of the stock settings on a Galaxy S20+ 5G.
 const OPEN_PERIOD: f32 = 0.37;
 const OPEN_SPEED: f32 = 2.94;
 const BACK_PERIOD: f32 = 0.393;
@@ -710,12 +696,19 @@ const TITLE_BLUR_DP: f32 = 25.0 / 3.0;
 /// faint once its foot reaches its top. A page let go with the bar folded
 /// this share of the way or further settles folded, and unfolded short of
 /// it, on a critically damped spring of this period set off from rest.
-/// Fitted to frames of the stock settings on a Xiaomi 17 Ultra.
+/// Fitted to frames of the stock settings on a Galaxy S20+ 5G.
 const FOLD_FADE_DP: f32 = 26.0;
 const FOLD_SETTLE: f32 = 0.5;
 const FOLD_PERIOD: f32 = 0.354;
 /// How far, in dp, a swipe from an edge has to come in to go back.
 const BACK_SWIPE_DP: f32 = 56.0;
+/// Two taps on the dark panel this close together, in milliseconds, light it
+/// again, as the phone's own system does.
+const DOUBLE_TAP_MS: u64 = 400;
+/// A pixel of every this many of the page is kept for the picture the lock
+/// screen keeps behind itself, small enough to soften cheaply and soft
+/// enough once stretched back.
+const LOCK_STEP: u32 = 10;
 /// The back cue sits this far, in dp, above where the finger came down,
 /// and stays at that height however the finger then wanders.
 const CUE_LIFT_DP: f32 = 9.0;
@@ -1066,6 +1059,30 @@ pub struct App {
     keys: bool,
     /// The button held down, and what holding it does.
     button: Option<(Key, Press)>,
+    /// Whether the tap that ended last set something off, whether or not it
+    /// asked for an effect of its own: the shell taps the motor for it.
+    tap_acted: bool,
+    /// When the last tap on the dark panel landed: two in quick succession
+    /// light it again.
+    dark_tap: Option<u64>,
+    /// The panel was lit by a key or a tap, not by a cable: what it shows is
+    /// behind the lock screen until a finger takes it away.
+    locked: bool,
+    /// The day the shell last told the clock's time falls on, as the lock
+    /// screen writes it.
+    today: String,
+    /// How far the lock screen's bar has been slid towards unlocking, from 0
+    /// to 1, and where the finger came down to slide it.
+    lock_slide: f32,
+    lock_from: Option<f32>,
+    /// What the panel showed, frosted, kept while the lock screen stands.
+    glass: Option<Canvas>,
+    /// The page the panel showed last, one pixel in [`LOCK_STEP`] of each
+    /// way, for the lock screen to keep soft behind itself.
+    behind: Option<Canvas>,
+    /// The frost the lock screen took last, and whether it blurred anything,
+    /// for the shell to tell the log.
+    frosted: Option<(u32, bool)>,
     /// The first of the power key and volume down gone down, waiting for
     /// the other to take a screenshot, and when it went down.
     chord: Option<(Key, u64)>,
@@ -1222,6 +1239,15 @@ impl App {
             dither: None,
             toast: None,
             drag: Drag::Idle,
+            tap_acted: false,
+            dark_tap: None,
+            locked: false,
+            today: String::new(),
+            lock_slide: 0.0,
+            lock_from: None,
+            glass: None,
+            behind: None,
+            frosted: None,
             tracker: Tracker::default(),
             fling: None,
             glide: None,

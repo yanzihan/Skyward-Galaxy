@@ -168,14 +168,6 @@ pub struct State {
     /// network, and whether it shows.
     pub password: String,
     pub show_password: bool,
-    /// The phone maker's update server is known, and the update page asks
-    /// it.
-    pub update_server: bool,
-    pub check: Check,
-    pub have: Have,
-    /// Downloading the newest system's full package, or how that last
-    /// ended.
-    pub download: Option<DownloadJob>,
     pub skyward_check: SkywardCheck,
     /// Updating Skyward, or how that last ended.
     pub skyward_job: Option<SkywardJob>,
@@ -259,10 +251,6 @@ impl Default for State {
             adding: None,
             password: String::new(),
             show_password: false,
-            update_server: false,
-            check: Check::Idle,
-            have: Have::Nothing,
-            download: None,
             skyward_check: SkywardCheck::Idle,
             skyward_job: None,
             traffic: Traffic::default(),
@@ -311,19 +299,6 @@ impl State {
     /// Whether a network is joined and has given an address.
     pub fn online(&self) -> bool {
         matches!(&self.wlan, Some(Wlan { joined: Some(j), .. }) if matches!(j.stage, Joining::Connected(_)))
-    }
-
-    /// The newest system the update server told of.
-    pub fn newest(&self) -> Option<&Release> {
-        match &self.check {
-            Check::Answered(Some(r)) => Some(r),
-            _ => None,
-        }
-    }
-
-    /// Whether the full package is being downloaded.
-    pub fn downloading(&self) -> bool {
-        self.download.as_ref().is_some_and(|d| d.outcome.is_none())
     }
 
     /// Skyward's newest release, as GitHub told of it.

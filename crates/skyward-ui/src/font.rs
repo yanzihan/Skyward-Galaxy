@@ -157,7 +157,7 @@ impl Face {
     }
 }
 
-/// `wght` per text role, fitted on Xiaomi 17 Ultra screenshots:
+/// `wght` per text role, fitted on Galaxy S20+ 5G screenshots:
 /// for each string, the size and weight whose rendering matches the ink
 /// width, height and colour-normalised coverage (`skyward-preview --match`).
 pub struct Weights {
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn a_line_is_as_tall_as_the_stock_search_fields_cursor() {
-        // Xiaomi 17 Ultra, 3 px a dp, the search field's 16.9 dp text: its
+        // Galaxy S20+ 5G, 3 px a dp, the search field's 16.9 dp text: its
         // placeholder's ink 47 px tall, its cursor 69 px, measured on screen.
         let f = bundled();
         let em = 16.9 * 3.0;

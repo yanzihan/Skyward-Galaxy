@@ -39,6 +39,64 @@ impl App {
         self.stir(now);
     }
 
+    /// Light the panel behind the lock screen, as the power key and a tap
+    /// on the dark panel do: a finger takes it away again.
+    pub(super) fn wake_locked(&mut self, now: u64) {
+        self.wake(now);
+        self.locked = true;
+        self.glass = None;
+        self.dirty = true;
+    }
+
+    /// Whether the lock screen stands over what the panel shows.
+    pub fn locked(&self) -> bool {
+        self.locked
+    }
+
+    /// The day the shell last told the clock's time falls on, for the lock
+    /// screen to write.
+    pub fn set_today(&mut self, day: String) {
+        if self.today != day {
+            self.today = day;
+            self.dirty = true;
+        }
+    }
+
+    /// The wash the shell lays over the frosted page under the lock screen.
+    pub fn lock_veil(&self) -> Rgba {
+        self.theme().pal.bg.with_alpha(150)
+    }
+
+    /// How much ink the small picture kept for the lock, and the lock's own
+    /// picture, hold, for the log to tell one blank from the other.
+    pub fn lock_ink(&self) -> (u64, u64) {
+        (self.behind.as_ref().map_or(0, |c| c.sharpness()), self.glass.as_ref().map_or(0, |c| c.sharpness()))
+    }
+
+    /// The small picture kept for the lock, and the lock's own, as pictures,
+    /// for telling what the lock is made of.
+    pub fn lock_pictures(&self) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+        let png = |c: &Option<Canvas>| {
+            let mut out = Vec::new();
+            c.as_ref().filter(|c| c.whole()).and_then(|c| c.write_png(&mut out).ok()).map(|()| out)
+        };
+        (png(&self.behind), png(&self.glass))
+    }
+
+    /// The frost the lock screen took last, and whether it blurred anything,
+    /// for the shell to tell the log.
+    pub fn take_frost(&mut self) -> Option<(u32, bool)> {
+        self.frosted.take()
+    }
+
+    /// A finger taking the lock screen away.
+    pub(super) fn unlock_panel(&mut self, now: u64) {
+        self.locked = false;
+        self.glass = None;
+        self.stir(now);
+        self.dirty = true;
+    }
+
     /// A charger or a computer was attached, `cable_in`, or taken away: the
     /// dark panel lights, and a lit one stays at full brightness for the
     /// screen-off time from now, as on the phone's own system. A cable
@@ -97,6 +155,8 @@ impl App {
         self.darkening = self.panel(now);
         self.curtain.set(false, now);
         self.display_on = false;
+        self.locked = false;
+        self.glass = None;
         self.bright = full_brightness();
         match std::mem::replace(&mut self.drag, Drag::Idle) {
             Drag::Confirm { .. } => {
@@ -307,8 +367,45 @@ mod tests {
         assert_eq!(app.top().1, 0.0, "nor scrolled the page");
         press(&mut app, Key::Power, 200);
         assert!(app.display_on());
+        assert!(app.locked(), "the power key lights the panel behind the lock screen");
         tap_at(&mut app, &f, &i, Action::Open(Screen::Settings), 700);
+        assert!(app.locked(), "a tap leaves the lock screen where it stands");
+        // The bar unlocks only slid all the way across, with a tap of the
+        // motor as it does.
+        app.touch(Touch::Down(40.0, H as f32 - 100.0), &f, 800);
+        app.touch(Touch::Move(40.0 + W as f32 * 0.6, H as f32 - 100.0), &f, 830);
+        assert_eq!(app.touch(Touch::Up, &f, 860), vec![Effect::Haptic], "the bar taps the motor as it unlocks");
+        assert!(!app.locked());
+        tap_at(&mut app, &f, &i, Action::Open(Screen::Settings), 1000);
         assert_eq!(app.screen(), Screen::Settings, "a tap on the lit panel does");
+    }
+
+    #[test]
+    fn a_short_slide_leaves_the_lock_screen_where_it_stands() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        press(&mut app, Key::Power, 0);
+        press(&mut app, Key::Power, 500);
+        assert!(app.locked());
+        app.touch(Touch::Down(40.0, H as f32 - 100.0), &f, 800);
+        app.touch(Touch::Move(40.0 + W as f32 * 0.2, H as f32 - 100.0), &f, 830);
+        assert!(app.touch(Touch::Up, &f, 860).is_empty(), "no motor where nothing opened");
+        assert!(app.locked(), "short of the far end it stays");
+        let _ = i;
+    }
+
+    #[test]
+    fn two_taps_on_the_dark_panel_light_it_behind_the_lock_screen() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        let (x, y) = spot(&mut app, &f, &i, Action::Open(Screen::Settings));
+        press(&mut app, Key::Power, 0);
+        assert!(app.touch(Touch::Down(x, y), &f, 100).is_empty());
+        assert!(app.touch(Touch::Up, &f, 130).is_empty());
+        assert!(!app.display_on(), "one tap lights nothing");
+        assert!(app.touch(Touch::Down(x, y), &f, 300).is_empty(), "and lights nothing by itself");
+        assert!(app.display_on(), "a second tap in quick succession lights it");
+        assert!(app.locked(), "behind the lock screen");
     }
 
     #[test]
