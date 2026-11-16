@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use cpio::{NewcBuilder, NewcReader};
+use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use std::ffi::{CString, OsStr};
 use std::fs;
 use std::io::{Cursor, Read, Write};
@@ -49,11 +50,23 @@ pub struct Ramdisk {
 }
 
 impl Ramdisk {
-    /// Unpack an LZ4 (legacy framing) compressed newc archive, as Android
-    /// boot images carry.
+    /// Unpack a compressed newc archive, as Android boot images carry: LZ4
+    /// in the frame or the legacy framing, gzip, or the archive alone.
     pub fn decode(compressed: &[u8]) -> Result<Self> {
-        let mut cpio = Vec::new();
-        lz4_flex::frame::FrameDecoder::new(compressed).read_to_end(&mut cpio).context("lz4 decode")?;
+        let cpio = match detect_format(compressed)? {
+            RamdiskFormat::Gzip => {
+                let mut out = Vec::new();
+                GzDecoder::new(compressed).read_to_end(&mut out).context("gzip decode")?;
+                out
+            }
+            RamdiskFormat::Lz4Frame => {
+                let mut out = Vec::new();
+                lz4_flex::frame::FrameDecoder::new(compressed).read_to_end(&mut out).context("lz4 decode")?;
+                out
+            }
+            RamdiskFormat::Lz4Legacy => lz4_legacy_decode(compressed)?,
+            RamdiskFormat::Plain => compressed.to_vec(),
+        };
         let mut entries = Vec::new();
         let mut rest = Cursor::new(cpio.as_slice());
         loop {
@@ -85,6 +98,27 @@ impl Ramdisk {
     /// unpacker reads no other LZ4 framing) at its highest compression.
     pub fn encode(&self) -> Result<Vec<u8>> {
         lz4_tool(&self.archive()?)
+    }
+
+    /// Pack as a newc archive in `format`, the compression [`decode`] read
+    /// the ramdisk in, so that an image built over another's keeps the
+    /// compression it came in.
+    pub fn encode_in(&self, format: RamdiskFormat) -> Result<Vec<u8>> {
+        let archive = self.archive()?;
+        Ok(match format {
+            RamdiskFormat::Plain => archive,
+            RamdiskFormat::Lz4Legacy => lz4_legacy(&archive),
+            RamdiskFormat::Lz4Frame => {
+                let mut encoder = lz4_flex::frame::FrameEncoder::new(Vec::new());
+                encoder.write_all(&archive).context("lz4 encode")?;
+                encoder.finish().context("lz4 encode")?
+            }
+            RamdiskFormat::Gzip => {
+                let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+                encoder.write_all(&archive).context("gzip encode")?;
+                encoder.finish().context("gzip encode")?
+            }
+        })
     }
 
     /// Pack as a newc archive, uncompressed.
@@ -161,6 +195,25 @@ impl Ramdisk {
                 Ok(())
             }
             Some(_) => bail!("{name} is in the ramdisk and is not a link"),
+            None => self.insert(name, S_IFLNK | LINK_MODE, target.as_bytes().to_vec()),
+        }
+    }
+
+    /// Point `name` to `target`, replacing a regular file of that name too:
+    /// a third-party ramdisk keeps its own copy of some commands, and the
+    /// recovery binary takes their place.
+    pub fn link_over(&mut self, name: &str, target: &str) -> Result<()> {
+        match self.entries.iter_mut().find(|e| e.name == name) {
+            Some(e) if e.mode & S_IFMT == S_IFLNK => {
+                e.data = target.as_bytes().to_vec();
+                Ok(())
+            }
+            Some(e) if e.mode & S_IFMT == S_IFREG => {
+                e.mode = S_IFLNK | LINK_MODE;
+                e.data = target.as_bytes().to_vec();
+                Ok(())
+            }
+            Some(_) => bail!("{name} is in the ramdisk and is not a program"),
             None => self.insert(name, S_IFLNK | LINK_MODE, target.as_bytes().to_vec()),
         }
     }
@@ -250,6 +303,54 @@ fn set_time(path: &Path, mtime: u32) -> Result<()> {
         return Err(std::io::Error::last_os_error()).context("give it its time");
     }
     Ok(())
+}
+
+/// The compression a ramdisk is held in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RamdiskFormat {
+    /// gzip, as Samsung's recovery ramdisk is.
+    Gzip,
+    /// LZ4's frame format.
+    Lz4Frame,
+    /// LZ4's legacy framing, which the kernel's initramfs unpacker reads.
+    Lz4Legacy,
+    /// The newc archive alone, uncompressed.
+    Plain,
+}
+
+/// The compression `compressed` holds an archive in, by its leading bytes.
+pub fn detect_format(compressed: &[u8]) -> Result<RamdiskFormat> {
+    if compressed.starts_with(&[0x1f, 0x8b]) {
+        Ok(RamdiskFormat::Gzip)
+    } else if compressed.starts_with(&0x184D_2B50u32.to_le_bytes()) {
+        Ok(RamdiskFormat::Lz4Frame)
+    } else if compressed.starts_with(&LZ4_LEGACY_MAGIC.to_le_bytes()) {
+        Ok(RamdiskFormat::Lz4Legacy)
+    } else if compressed.starts_with(b"070701") {
+        Ok(RamdiskFormat::Plain)
+    } else {
+        bail!("the ramdisk starts in no known compression")
+    }
+}
+
+/// The archive `compressed` holds in the legacy LZ4 framing: the magic
+/// number, then each block of at most 8 MiB as one LZ4 block with its
+/// compressed length before it.
+fn lz4_legacy_decode(compressed: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut block = vec![0u8; LZ4_LEGACY_BLOCK];
+    let mut rest = &compressed[4..];
+    while rest.len() >= 4 {
+        let len = u32::from_le_bytes(rest[..4].try_into().expect("four bytes")) as usize;
+        if len == 0 {
+            break;
+        }
+        let packed = rest.get(4..4 + len).with_context(|| format!("a legacy block of {len} bytes runs past the end"))?;
+        let written = lz4_flex::block::decompress_into(packed, &mut block).context("lz4 legacy decode")?;
+        out.extend_from_slice(&block[..written]);
+        rest = &rest[4 + len..];
+    }
+    Ok(out)
 }
 
 /// The legacy LZ4 framing's magic number.

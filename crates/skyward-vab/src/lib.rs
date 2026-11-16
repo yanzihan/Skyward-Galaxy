@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn empty_state_file_means_no_update() {
-        // A Xiaomi 17 Ultra with no update pending keeps a zero-length file.
+        // A Galaxy S20+ 5G with no update pending keeps a zero-length file.
         assert_eq!(phase(&[]), SnapshotState::None);
     }
 
@@ -458,7 +458,7 @@ mod tests {
             total_sectors: 4_225_024,
             metadata_sectors: 33_024,
             merge_phase: MergePhase::SecondPhase as i32,
-            source_build_fingerprint: "Xiaomi/ishtar/ishtar:13/TKQ1.221114.001/OS3.0.305.0.WMACNXM:user/release-keys".into(),
+            source_build_fingerprint: "samsung/p3q/p3q:13/TKQ1.221114.001/G9980ZHSGHZB1:user/release-keys".into(),
             ..UpdateStatus::default()
         };
         assert_eq!(decode_status(&status.encode_to_vec()).unwrap(), status);

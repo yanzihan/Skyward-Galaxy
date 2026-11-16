@@ -1,4 +1,6 @@
 use anyhow::{anyhow, bail, Result};
+#[cfg(target_os = "android")]
+use anyhow::Context;
 
 /// The vendor persist partition, where Android's time daemon keeps how far
 /// the real time runs ahead of the phone's real-time clock.
@@ -8,13 +10,43 @@ pub const PERSIST: &str = "/dev/block/by-name/persist";
 /// not mounted already.
 pub const MOUNT: &str = "/skyward/persist";
 
-/// The time daemon's offset for the time of day, relative to persist's root:
-/// milliseconds as a little-endian u64.
-pub const OFFSET: &str = "time/ats_2";
+/// Where the time daemon keeps its offsets for the time of day, relative to
+/// persist's root: each copy is 8 bytes of little-endian milliseconds.
+/// Samsung's daemon writes several copies (ats_15 among them), so the one
+/// written last is the one read.
+pub const OFFSET: &str = "time";
 
 /// The real-time clock's count of seconds. On Qualcomm phones it runs from
 /// whenever the PMIC last lost power, and Android never sets it.
 pub const RTC: &str = "/sys/class/rtc/rtc0/since_epoch";
+
+/// The offset the time daemon wrote last, from the copies in `dir`: one
+/// older than 2020 or newer than 2100 belongs to no run of the daemon at all.
+#[cfg(target_os = "android")]
+fn stored_offset(dir: &std::path::Path) -> Result<u64> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    const FIRST: u64 = 1_577_836_800_000;
+    const LAST: u64 = 4_102_444_800_000;
+    let mut best: Option<(SystemTime, u64)> = None;
+    for entry in std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("read {}", dir.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("ats_") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(entry.path()) else { continue };
+        let Ok(raw) = <[u8; 8]>::try_from(bytes.as_slice()) else { continue };
+        let value = u64::from_le_bytes(raw);
+        if !(FIRST..=LAST).contains(&value) {
+            continue;
+        }
+        let written = entry.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+        if best.as_ref().is_none_or(|(at, _)| written > *at) {
+            best = Some((written, value));
+        }
+    }
+    best.map(|(_, value)| value).ok_or_else(|| anyhow!("the time daemon stored no offset in {}", dir.display()))
+}
 
 /// The offset an ats_ file holds, in milliseconds. A daemon that never had
 /// the time stores none, and nothing can be told from the RTC alone.
@@ -42,18 +74,17 @@ pub fn set_from_rtc() -> Result<u64> {
     // An earlier run of the recovery service may have left persist mounted
     // where the phone's own programs use it, writable, and then it cannot
     // be mounted read-only besides.
-    let read = match skyward_block::mount::points_of(skyward_block::devnum(PERSIST)?)?.first() {
-        Some(at) => fs::read(at.join(OFFSET)).with_context(|| format!("read persist's {OFFSET}")),
+    let offset_ms = match skyward_block::mount::points_of(skyward_block::devnum(PERSIST)?)?.first() {
+        Some(at) => stored_offset(&at.join(OFFSET)),
         None => {
             let mount = Path::new(MOUNT);
             fs::create_dir_all(mount).with_context(|| format!("make {}", mount.display()))?;
             skyward_block::mount::mount_ro(Path::new(PERSIST), mount)?;
-            let read = fs::read(mount.join(OFFSET)).with_context(|| format!("read persist's {OFFSET}"));
+            let read = stored_offset(&mount.join(OFFSET));
             skyward_block::mount::umount(mount)?;
             read
         }
-    };
-    let offset_ms = offset(&read?)?;
+    }?;
     let rtc = fs::read_to_string(RTC).with_context(|| format!("read {RTC}"))?;
     let rtc_s: u64 = rtc.trim().parse().with_context(|| format!("{RTC} holds {rtc:?}"))?;
     let now = wall(rtc_s, offset_ms);

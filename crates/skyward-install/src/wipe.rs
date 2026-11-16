@@ -111,7 +111,7 @@ mod tests {
     use super::*;
 
     fn phone() -> Phone {
-        Phone { device: "ishtar".into(), serial: "2674dc3e".into(), installed: None }
+        Phone { device: "p3q".into(), serial: "2674dc3e".into(), installed: None }
     }
 
     fn metadata(lines: &[&str]) -> Metadata {
@@ -120,23 +120,23 @@ mod tests {
 
     #[test]
     fn a_package_for_this_phone_erases_it() {
-        let m = metadata(&["ota-type=BRICK", "pre-device=ishtar", "serialno=2674dc3e|1234abcd"]);
+        let m = metadata(&["ota-type=BRICK", "pre-device=p3q", "serialno=2674dc3e|1234abcd"]);
         assert_eq!(check(&m, &phone(), "release-keys"), Ok(()));
     }
 
     #[test]
     fn a_package_of_another_kind_or_for_another_phone_is_refused() {
-        let update = metadata(&["ota-type=AB", "pre-device=ishtar"]);
+        let update = metadata(&["ota-type=AB", "pre-device=p3q"]);
         assert_eq!(check(&update, &phone(), "release-keys"), Err(Refusal::NotBrick("AB".into())));
         let other = metadata(&["ota-type=BRICK", "pre-device=aurora|dagger"]);
         assert_eq!(check(&other, &phone(), "test-keys"), Err(Refusal::OtherDevice("aurora|dagger".into())));
-        let serials = metadata(&["ota-type=BRICK", "pre-device=ishtar", "serialno=1234abcd"]);
+        let serials = metadata(&["ota-type=BRICK", "pre-device=p3q", "serialno=1234abcd"]);
         assert_eq!(check(&serials, &phone(), "test-keys"), Err(Refusal::OtherSerial));
     }
 
     #[test]
     fn a_package_that_names_no_phone_erases_only_one_off_its_makers_keys() {
-        let m = metadata(&["ota-type=BRICK", "pre-device=ishtar"]);
+        let m = metadata(&["ota-type=BRICK", "pre-device=p3q"]);
         assert_eq!(check(&m, &phone(), "release-keys"), Err(Refusal::NoSerial));
         assert_eq!(check(&m, &phone(), "dev-keys"), Ok(()));
     }

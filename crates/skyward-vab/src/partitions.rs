@@ -69,7 +69,13 @@ fn bytes(p: &Partition) -> u64 {
 /// Map partition `p` from super read-only with device-mapper and mount it
 /// over its point. A device that does not mount is removed again.
 fn map_and_mount(p: &Partition, devices: &[(u32, u32)], slot: Slot) -> Result<Mounted> {
-    let device = dm::create(&p.name, &targets(p, devices), true)?;
+    // A third-party recovery's init maps super's partitions as it starts,
+    // before any recovery program runs; a mapping already there is used as
+    // it is, since making it again would fail with the device in use.
+    let device = match dm::status(&p.name)? {
+        Some((_, minor)) => PathBuf::from(format!("/dev/block/dm-{minor}")),
+        None => dm::create(&p.name, &targets(p, devices), true)?,
+    };
     let mount_point = mount_point(base(p, slot));
     let mounted = (|| -> Result<String> {
         fs::create_dir_all(&mount_point).with_context(|| format!("create {}", mount_point.display()))?;
@@ -85,16 +91,23 @@ fn map_and_mount(p: &Partition, devices: &[(u32, u32)], slot: Slot) -> Result<Mo
 }
 
 /// The slot's partitions that hold data. Copy-on-write partitions such as
-/// odm_b-cow end in -cow and stay out.
+/// odm_b-cow end in -cow and stay out. On a phone that is not A/B the
+/// partitions carry no suffix at all, and the plain names are the slot's.
 fn slot_partitions(md: &Metadata, slot: Slot) -> Vec<&Partition> {
+    let usable = |p: &&Partition| !p.extents.is_empty() && p.attributes & ATTR_DISABLED == 0;
+    let suffixed: Vec<&Partition> = md.partitions.iter().filter(|p| p.name.ends_with(slot.suffix())).filter(usable).collect();
+    if !suffixed.is_empty() {
+        return suffixed;
+    }
     md.partitions
         .iter()
-        .filter(|p| p.name.ends_with(slot.suffix()) && !p.extents.is_empty() && p.attributes & ATTR_DISABLED == 0)
+        .filter(|p| !p.name.ends_with("_a") && !p.name.ends_with("_b") && !p.name.ends_with("-cow"))
+        .filter(usable)
         .collect()
 }
 
 fn base(p: &Partition, slot: Slot) -> &str {
-    &p.name[..p.name.len() - slot.suffix().len()]
+    p.name.strip_suffix(slot.suffix()).unwrap_or(&p.name)
 }
 
 /// Partitions are mapped only while no update snapshot is outstanding,
@@ -375,7 +388,13 @@ pub fn mounted_partitions(slot: Slot) -> Result<Vec<Mounted>> {
         let name_file = entry.path().join("dm/name");
         let name = fs::read_to_string(&name_file).with_context(|| format!("read {}", name_file.display()))?;
         let name = name.trim();
-        let Some(base) = name.strip_suffix(slot.suffix()) else { continue };
+        // A phone that is not A/B names its mappings with no suffix at all.
+        let Some(base) = name
+            .strip_suffix(slot.suffix())
+            .or_else(|| (!name.ends_with("_a") && !name.ends_with("_b")).then_some(name))
+        else {
+            continue;
+        };
         let device = Path::new("/dev/block").join(&node);
         let mount_point = mount_point(base);
         let Some(shown) = mount::visible(&mount_point)? else { continue };

@@ -39,6 +39,9 @@ pub struct DeviceInfo {
     pub screen: Option<f32>,
     pub os_version: Option<String>,
     pub android: Option<String>,
+    /// The bootloader's own version, which names the stock build the phone's
+    /// firmware was flashed from, whatever system runs beside it.
+    pub firmware: Option<String>,
     /// The locale the installed system is built to start in, such as
     /// `zh-CN`.
     pub locale: Option<String>,
@@ -114,7 +117,7 @@ pub struct Battery {
     pub full: Option<u64>,
     /// Voltage in µV.
     pub voltage: Option<u64>,
-    /// A charger charging it quickly, as Xiaomi's Qualcomm phones tell
+    /// A charger charging it quickly, as Samsung's Qualcomm phones tell
     /// beside their power supplies.
     pub quick: bool,
     /// A charger or a computer powers the phone, by cable or wirelessly: a
@@ -165,6 +168,7 @@ pub fn collect_with(cfg: &DeviceConfig, battery: Option<Battery>) -> Result<Devi
         screen: d.diagonal,
         os_version: system.get(&cfg.device.os_version_prop),
         android: system.get("ro.build.version.release"),
+        firmware: skyward_block::boot_param("androidboot.bootloader")?,
         locale: system.get("ro.product.locale"),
         security_patch: system.get("ro.build.version.security_patch").map(|s| s.parse()).transpose()?,
         kernel: kernel_release()?,
@@ -199,7 +203,9 @@ impl SystemProps {
         }
         let read = match skyward_vab::current_slot()? {
             Some(slot) => installed_props(slot),
-            None => Ok(HashMap::new()),
+            // A phone that is not A/B has one slot, whose partitions carry no
+            // suffix at all.
+            None => installed_props(skyward_vab::Slot::A),
         };
         let why = read.as_ref().err().map(|e| format!("{e:#}"));
         if PROPS_UNREAD.lock().expect("nothing panics while it is held").untold(why.as_deref()) {
@@ -224,14 +230,15 @@ const PROP_ORDER: [&str; 8] = ["system", "system_ext", "system_dlkm", "vendor", 
 const BOOT_PROPS: &str = "ro.boot.";
 
 /// The installed system's build properties from its mounted partitions, in
-/// init's order. Partitions init does not list, such as Xiaomi's mi_ext,
-/// come after the ones it does. Init has the properties the bootloader
-/// passes before it reads any of these, and a file may import another named
-/// after them, as Xiaomi's odm imports what each hardware version sets; so
-/// they come first here too, the same in a recovery as in the system.
+/// init's order. Partitions init does not list come after the ones it does.
+/// Init has the properties the bootloader passes before it reads any of
+/// these, and a file may import another named after them, as the vendor
+/// partition imports what each hardware version sets; so they come first
+/// here too, the same in a recovery as in the system.
 pub fn installed_props(slot: Slot) -> Result<HashMap<String, String>> {
     let base = |m: &skyward_vab::Mounted| -> String {
-        m.partition.strip_suffix(slot.suffix()).expect("mounted partitions carry the slot suffix").to_string()
+        // A phone that is not A/B names its partitions with no suffix.
+        m.partition.strip_suffix(slot.suffix()).unwrap_or(&m.partition).to_string()
     };
     let mut parts = skyward_vab::mounted_partitions(slot)?;
     parts.sort_by_key(|m| PROP_ORDER.iter().position(|b| *b == base(m)).unwrap_or(PROP_ORDER.len()));
@@ -420,7 +427,10 @@ fn online(dir: &Path) -> Result<bool> {
 fn said_online(read: std::io::Result<String>) -> std::io::Result<bool> {
     match read {
         Ok(s) => Ok(s.trim() == "1"),
-        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::WouldBlock) => Ok(false),
+        // A supply without one has no say; a driver that cannot tell yet,
+        // as Samsung's fuel gauge answers EINVAL, is taken as offline and
+        // asked again at the next reading.
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::WouldBlock | ErrorKind::InvalidInput) => Ok(false),
         Err(e) => Err(e),
     }
 }
@@ -440,7 +450,7 @@ mod tests {
 
     #[test]
     fn mem_total_from_meminfo() {
-        // Values reported by a Xiaomi 17 Ultra.
+        // Values reported by a 16 GB Samsung phone.
         let text = "MemTotal:       15472464 kB\nMemFree:         2381608 kB\n";
         assert_eq!(mem_total(text).unwrap(), 15_472_464);
         assert!(mem_total("MemFree: 1 kB\n").is_err());

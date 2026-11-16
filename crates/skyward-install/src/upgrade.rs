@@ -76,8 +76,8 @@ mod tests {
 
     #[test]
     fn the_image_in_a_releases_zip_is_taken_whole() {
-        let image = skyward_for("ishtar");
-        let zip = zipped(&[("skyward-v0.1.4-ishtar-OS3.0.308.0.WMACNXM.img", &image)]);
+        let image = skyward_for("p3q");
+        let zip = zipped(&[("skyward-v0.1.4-p3q-G9980ZHSGHZB1.img", &image)]);
         assert_eq!(unzip(zip.path()).unwrap(), image);
         let two = zipped(&[("a.img", &image), ("b.img", &image)]);
         assert!(unzip(two.path()).is_err(), "a zip with more than the image");
@@ -90,11 +90,11 @@ mod tests {
 
     #[test]
     fn only_skyward_for_this_phone_goes_in() {
-        assert!(check(&skyward_for("ishtar"), "ishtar").is_ok());
-        let e = check(&skyward_for("nezha"), "ishtar").unwrap_err();
-        assert_eq!(e.to_string(), "the image is Skyward for nezha, not for ishtar");
-        assert_eq!(check(&recovery(false), "ishtar").unwrap_err().to_string(), "the image is not Skyward");
-        assert!(check(&recovery(true), "ishtar").is_err(), "a device configuration that names no phone");
+        assert!(check(&skyward_for("p3q"), "p3q").is_ok());
+        let e = check(&skyward_for("y2q"), "p3q").unwrap_err();
+        assert_eq!(e.to_string(), "the image is Skyward for y2q, not for p3q");
+        assert_eq!(check(&recovery(false), "p3q").unwrap_err().to_string(), "the image is not Skyward");
+        assert!(check(&recovery(true), "p3q").is_err(), "a device configuration that names no phone");
     }
 
     /// Recovery partitions of `size` bytes holding `a` and `b`.
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn the_build_goes_where_the_phone_starts_next_and_where_skyward_is() {
-        let (skyward, stock) = (skyward_for("ishtar"), recovery(false));
+        let (skyward, stock) = (skyward_for("p3q"), recovery(false));
         let size = skyward.len().max(stock.len()) + 4096;
         assert_eq!(slots(partitions(&skyward, &stock, size).path(), Slot::A).unwrap(), [Slot::A]);
         assert_eq!(slots(partitions(&skyward, &skyward, size).path(), Slot::A).unwrap(), [Slot::A, Slot::B], "an older build in the other slot");
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn the_build_is_written_and_read_back() {
-        let (older, newer, stock) = (recovery(true), skyward_for("ishtar"), recovery(false));
+        let (older, newer, stock) = (recovery(true), skyward_for("p3q"), recovery(false));
         let size = older.len().max(newer.len()) + 4096;
         let dir = partitions(&older, &stock, size);
         let mut told = Vec::new();

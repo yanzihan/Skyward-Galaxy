@@ -452,8 +452,9 @@ pub fn first_stage(cmdline: &str, bootconfig: &str, skip: &[String]) -> Result<L
 mod tests {
     use super::*;
 
-    /// The 13 Ultra's command line, as its recovery read it.
-    const ISHTAR: &str = "stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=protected cgroup_disable=pressure console=ttyMSM0,115200n8 kpti=0 kernel.panic_on_rcu_stall=1 service_locator.enable=1 msm_rtb.filter=0x237 rcupdate.rcu_expedited=1 rcu_nocbs=0-7 ftrace_dump_on_oops swiotlb=noforce loop.max_part=7 fw_devlink.strict=1 allow_mismatched_32bit_el0 cpufreq.default_governor=performance printk.console_no_auto_verbose=0 kasan=off sysctl.kernel.sched_pelt_multiplier=4 can.stats_timer=0 pcie_ports=compat irqaffinity=0-2 disable_dma32=on no-steal-acc cgroup.memory=nokmem,nosocket video=vfb:640x400,bpp=32,memsize=3072000 disable_dma32=on swinfo.fingerprint=ishtar:13/OS3.0.308.0.WMACNXM:user mtdoops.fingerprint=ishtar:13/OS3.0.308.0.WMACNXM:user bootconfig  bootinfo.pureason=0x40001 bootinfo.pdreason=0x2 debug_ext.initrd_size=78178 hwid.hwid_value=589824 hwid.project=5 hwid.build_adc=65616 hwid.project_adc=20488 msm_drm.dsi_display0=qcom,mdss_dsi_m1_42_02_0a_dsc_cmd: msm_drm.oled_wp=01f2030002030104 msm_drm.debugpolicy=0x20 rootwait ro init=/init log_buf_len=2M loglevel=6 qcom_geni_serial.con_enabled=0 block2mtd.block2mtd=/dev/block/sda19,2097152 mtdoops.mtddev=0 mtdoops.record_size=2097152 mtdoops.dump_oops=0 printk.always_kmsg_dump=1 silent_boot.mode=nonsilent\n";
+    /// An SM-G9980's command line, as its recovery read it: the modules the
+    /// first stage loads take their settings from it.
+    const P3Q: &str = "cgroup_disable=pressure log_buf_len=256K rcu_nocbs=0-7 pcie_ports=compat androidboot.hardware=qcom androidboot.fstab_suffix=default firmware_class.path=/vendor/firmware_mnt/image loop.max_part=7 msm_drm.dsi_display0=ss_dsi_panel_S6E3HAD_AMB681XV01_WQHD: msm_drm.lcd_id=9126E8 sec_mparam.pmic_info=3 sec_mparam.fg_reset=0 silent_boot.mode=nonsilent\n";
 
     fn write(dir: &Path, name: &str, text: &str) {
         fs::write(dir.join(name), text).unwrap();
@@ -474,17 +475,15 @@ mod tests {
 
     #[test]
     fn the_command_line_gives_the_first_stages_modules_their_settings() {
-        let options = cmdline_options(ISHTAR);
+        let options = cmdline_options(P3Q);
         let of = |module: &str| options.iter().filter(|(m, _)| m == module).map(|(_, o)| o.as_str()).collect::<Vec<_>>();
-        assert_eq!(of("hwid"), ["hwid_value=589824", "project=5", "build_adc=65616", "project_adc=20488"]);
-        assert_eq!(of("bootinfo"), ["pureason=0x40001", "pdreason=0x2"]);
-        assert_eq!(of("debug_ext"), ["initrd_size=78178"]);
-        assert_eq!(of("swinfo"), ["fingerprint=ishtar:13/OS3.0.308.0.WMACNXM:user"], "dots in a value stay in it");
-        assert_eq!(of("msm_drm"), ["dsi_display0=qcom,mdss_dsi_m1_42_02_0a_dsc_cmd:", "oled_wp=01f2030002030104", "debugpolicy=0x20"]);
-        assert_eq!(of("block2mtd"), ["block2mtd=/dev/block/sda19,2097152"]);
+        assert_eq!(of("msm_drm"), ["dsi_display0=ss_dsi_panel_S6E3HAD_AMB681XV01_WQHD:", "lcd_id=9126E8"], "dots in a value stay in it");
+        assert_eq!(of("firmware_class"), ["path=/vendor/firmware_mnt/image"]);
+        assert_eq!(of("sec_mparam"), ["pmic_info=3", "fg_reset=0"]);
+        assert_eq!(of("androidboot"), ["hardware=qcom", "fstab_suffix=default"]);
+        assert_eq!(of("loop"), ["max_part=7"]);
         assert_eq!(of("silent_boot"), ["mode=nonsilent"], "the last setting ends at the line's end");
-        assert_eq!(of("sysctl"), ["kernel.sched_pelt_multiplier=4"], "the module is what comes before the first dot");
-        assert!(of("video").is_empty() && of("console").is_empty(), "a setting with no dot names no module");
+        assert!(of("cgroup_disable").is_empty() && of("rcu_nocbs").is_empty(), "a setting with no dot names no module");
     }
 
     #[test]

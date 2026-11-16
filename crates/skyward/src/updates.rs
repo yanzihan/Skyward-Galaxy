@@ -1,8 +1,6 @@
-//! Asking the phone maker's update server for the newest system and
-//! downloading its full package; and asking GitHub for Skyward's newest
-//! release, downloading its build for the phone and writing it into the
-//! recovery partitions: on a thread of their own that tells the screen how
-//! far they have come.
+//! Asking GitHub for Skyward's newest release, downloading its build for
+//! the phone and writing it into the recovery partitions: on a thread of
+//! its own that tells the screen how far it has come.
 
 use anyhow::{Context, Result};
 use skyward_install::upgrade;
@@ -10,7 +8,7 @@ use skyward_net::download::{self, Damaged, Failure, NoRoom, Progress, Refused, S
 use skyward_net::github::{self, Build, Newest};
 use skyward_net::http::{self, Servers};
 use skyward_net::reach::{self, Reach};
-use skyward_net::release::{self, Installed, Release, Unanswered};
+use skyward_net::Unanswered;
 use skyward_vab::Slot;
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
@@ -31,13 +29,6 @@ const TRIES: u32 = 5;
 const BETWEEN: Duration = Duration::from_secs(3);
 
 pub enum Task {
-    /// Ask `server` for the newest system for `installed`. Where that
-    /// fails, `probe`, the page that tells whether the network joined
-    /// reaches the internet, says whether the network is why.
-    Check { server: String, probe: String, installed: Installed },
-    /// Download `release`'s full package to `path`; `server` is asked again
-    /// for where it is when the addresses it gave have run out.
-    Download { server: String, installed: Installed, release: Release, path: PathBuf },
     /// Ask GitHub for Skyward's newest release and its zip for the phone
     /// `codename` names; where that fails, `probe` says whether the network
     /// is why.
@@ -50,7 +41,6 @@ pub enum Task {
 }
 
 pub enum Event {
-    Checked(Result<Option<Release>, Unanswered>),
     /// What GitHub answered of Skyward's newest release.
     SkywardChecked(Result<Newest, Unanswered>),
     /// How far the download has come, and how fast it goes, in bytes a
@@ -95,46 +85,6 @@ impl Worker {
                 teller.tell(event);
             };
             match task {
-                // The package's exact length is asked of where it is
-                // downloaded from: the server gives it rounded, in units
-                // of 1024. Without it the rounded one shows.
-                Task::Check { server, probe, installed } => {
-                    let a = http::agent(servers.clone());
-                    *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-                    let mut answer = release::ask(&a, &server, &installed).map_err(|e| unanswered(&e, &server, &probe, &servers));
-                    if let Ok(Some(r)) = &mut answer {
-                        match release::length(&a, &r.urls[0]) {
-                            Ok(length) => r.length = Some(length),
-                            Err(e) => {
-                                let _ = skyward_sys::kmsg(&format!("how long {} is: {e:#}", r.name));
-                            }
-                        }
-                    }
-                    tell(Event::Checked(answer));
-                }
-                // A signed address runs out a day after the server gave
-                // it: once one is turned down, the server is asked again
-                // for where the package is.
-                Task::Download { server, installed, release, path } => {
-                    let mut asked_again = false;
-                    let mut refused = |a: &ureq::Agent| {
-                        if asked_again {
-                            return Again::Retry;
-                        }
-                        asked_again = true;
-                        match release::ask(a, &server, &installed) {
-                            Ok(Some(fresh)) if fresh.md5 == release.md5 => Again::From(fresh.urls),
-                            Ok(_) => Again::End(End::Failed(Failure::Changed)),
-                            Err(again) => {
-                                let _ = skyward_sys::kmsg(&format!("asking where {} is: {again:#}", release.name));
-                                Again::Retry
-                            }
-                        }
-                    };
-                    let sum = Sum::Md5(release.md5.clone());
-                    let end = fetch(&servers, release.urls.clone(), &sum, &release.name, &path, &stopping, &using, &tell, &mut refused);
-                    tell(Event::Ended(end));
-                }
                 Task::CheckSkyward { probe, codename } => {
                     let a = http::agent(servers.clone());
                     *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
@@ -229,7 +179,6 @@ enum Again {
     From(Vec<String>),
     /// Try again, as after any other failure.
     Retry,
-    End(End),
 }
 
 /// Download the package `name`, whose digest is `sum`, to `path`, from
@@ -307,7 +256,6 @@ fn fetch(
                     url = 0;
                     continue;
                 }
-                Again::End(end) => return end,
                 Again::Retry => {}
             }
         }

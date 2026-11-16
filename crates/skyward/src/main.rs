@@ -36,6 +36,8 @@ mod services;
 #[cfg(target_os = "android")]
 mod settings;
 #[cfg(target_os = "android")]
+mod splash;
+#[cfg(target_os = "android")]
 mod systems;
 #[cfg(target_os = "android")]
 mod ui;
@@ -59,7 +61,7 @@ struct Cli {
 enum Cmd {
     /// Print what the About page shows, plus a partition summary.
     Info {
-        /// Device configuration, e.g. devices/nezha.toml.
+        /// Device configuration, e.g. devices/p3q.toml.
         #[arg(long)]
         config: String,
     },
@@ -170,6 +172,48 @@ enum Cmd {
     /// directory, such as android.hardware.security.keymint.IKeyMintDevice/default.
     #[cfg(target_os = "android")]
     Service { name: String },
+    /// Draw one frame of the opening picture as a PNG, for looking at it
+    /// without a panel.
+    #[cfg(target_os = "android")]
+    SplashFrame {
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        width: u32,
+        #[arg(long)]
+        height: u32,
+        #[arg(long, default_value = "/skyward/device.toml")]
+        config: String,
+        /// How long after the picture began the frame is drawn, in
+        /// milliseconds.
+        #[arg(long, default_value_t = 1500)]
+        at: u64,
+        /// The field of the dark theme rather than the light one's.
+        #[arg(long)]
+        dark: bool,
+        /// The typeface to draw with rather than the recovery's own.
+        #[arg(long)]
+        font: Option<PathBuf>,
+        /// The monospaced typeface rather than the recovery's own.
+        #[arg(long)]
+        mono: Option<PathBuf>,
+        /// Draw the wordmark alone on white, to see whether it is cut.
+        #[arg(long)]
+        sprite: bool,
+        /// Draw the wordmark at many sizes down one picture, to find the
+        /// sizes it is drawn whole at.
+        #[arg(long)]
+        strip: bool,
+    },
+    /// List the instances of a hardware service the phone's directory for
+    /// them knows of, and ask for one of them, such as
+    /// android.hardware.keymaster@4.0::IKeymasterDevice.
+    #[cfg(target_os = "android")]
+    Hidl {
+        interface: String,
+        #[arg(long, default_value = "default")]
+        instance: String,
+    },
     /// Report the phone's key service and, given a key directory Android
     /// wrote, unwrap the key it holds and say how long it is.
     #[cfg(target_os = "android")]
@@ -224,6 +268,13 @@ enum Cmd {
 }
 
 fn main() -> Result<()> {
+    // A panic ends the process with a signal, and its message goes to a
+    // stream the phone's init does not keep; put it in the kernel log where
+    // the reason for a recovery that will not stay up can be read.
+    #[cfg(target_os = "android")]
+    std::panic::set_hook(Box::new(|info| {
+        let _ = skyward_sys::kmsg(&format!("skyward panicked: {info}"));
+    }));
     // init starts the recovery service by path with no arguments.
     let started_as = std::env::args_os().next().unwrap_or_default();
     let name = Path::new(&started_as).file_name().unwrap_or_default();
@@ -345,11 +396,44 @@ fn main() -> Result<()> {
             Ok(())
         }
         #[cfg(target_os = "android")]
+        Cmd::SplashFrame { out, width, height, config, at, dark, font, mono, sprite, strip } => {
+            let cfg = DeviceConfig::load(&config)?;
+            let lang = cfg.device.lang.as_deref().and_then(|tag| skyward_ui::Lang::for_locale(tag).ok()).unwrap_or(skyward_ui::Lang::En);
+            let root = Path::new("/");
+            let font = font.unwrap_or_else(|| root.join(ramdisk::FONT));
+            let mono = mono.unwrap_or_else(|| root.join(ramdisk::MONO));
+            let sizes: Vec<f32> = vec![88.59375, 89.0, 98.4375, 98.0, 99.0];
+            match (sprite, strip) {
+                (_, true) => splash::sprite_strip(&out, width, &sizes, &font, &mono),
+                (true, _) => splash::sprite_frame(&out, cfg.display.density, dark, width, height, &font, &mono),
+                _ => splash::frame(&out, lang, cfg.display.density, dark, width, height, at, &font, &mono),
+            }
+        }
+        #[cfg(target_os = "android")]
+        Cmd::Hidl { interface, instance } => {
+            let hardware = skyward_binder::driver::Binder::hardware()?;
+            let known = skyward_binder::hidl::instances(&hardware, &interface)?;
+            println!("{interface} has {} instance(s): {}", known.len(), known.join(", "));
+            match skyward_binder::hidl::find(&hardware, &interface, &instance)? {
+                Some(service) => println!("{instance} is running and answers as {}", skyward_binder::hidl::describes(&service)?),
+                None => println!("{instance} is not running"),
+            }
+            Ok(())
+        }
+        #[cfg(target_os = "android")]
         Cmd::Keymint { key, alias } => {
-            let binder = skyward_binder::driver::Binder::open()?;
-            let service = skyward_crypto::keymint::KeyMint::open(&binder)?;
-            let hw = service.hardware()?;
-            println!("keymint {} version {} at security level {} by {}", hw.name, hw.version, hw.security_level, hw.author);
+            let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
+            let service = skyward_crypto::Service::open(&binder, &hardware)?;
+            match &service {
+                skyward_crypto::Service::KeyMint(service) => {
+                    let hw = service.hardware()?;
+                    println!("keymint {} version {} at security level {} by {}", hw.name, hw.version, hw.security_level, hw.author);
+                }
+                skyward_crypto::Service::Keymaster(service) => {
+                    let hw = service.hardware()?;
+                    println!("keymaster {} at security level {} by {}", hw.name, hw.security_level, hw.author);
+                }
+            }
             if let Some(alias) = alias {
                 let held = skyward_crypto::keystore2::key_blob(Path::new(skyward_crypto::keystore2::DATABASE), &alias)?;
                 println!("{alias} is a key of {} bytes", held.len());
@@ -406,8 +490,8 @@ fn main() -> Result<()> {
         #[cfg(target_os = "android")]
         Cmd::Data { credential, close: false } => {
             use skyward_crypto::data;
-            let binder = skyward_binder::driver::Binder::open()?;
-            let service = skyward_crypto::keymint::KeyMint::open(&binder)?;
+            let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
+            let service = skyward_crypto::Service::open(&binder, &hardware)?;
             let opening = data::open_without_credential(&service)?;
             match &opening.mounted {
                 Some(mounted) => {
@@ -452,8 +536,60 @@ fn main() -> Result<()> {
     }
 }
 
+/// The slot the phone booted, or the one slot of a phone that is not A/B:
+/// its partitions carry no suffix, and super keeps its copy of the metadata
+/// first.
 fn booted_slot() -> Result<skyward_vab::Slot> {
-    skyward_vab::current_slot()?.context("not an A/B device")
+    Ok(skyward_vab::current_slot()?.unwrap_or(skyward_vab::Slot::A))
+}
+
+/// Ask init for the port's adb function and wait until it answers. The
+/// controller init names is not always the one the port uses, so the
+/// vendor's own property stands in where init named none; and where init's
+/// own action ran before the controller was known, the gadget is bound here.
+#[cfg(target_os = "android")]
+fn bring_up_adb() -> Result<()> {
+    let log = |name: &str| {
+        let value = skyward_sys::prop(name).unwrap_or_else(|| "(unset)".to_string());
+        skyward_sys::kmsg(&format!("{name} is {value}"))
+    };
+    for name in ["ro.debuggable", "ro.boot.usbcontroller", "vendor.usb.controller", "sys.usb.controller", "sys.usb.config"] {
+        log(name)?;
+    }
+    if skyward_sys::prop("sys.usb.controller").is_none()
+        && let Some(controller) = skyward_sys::prop("vendor.usb.controller")
+    {
+        skyward_sys::set_prop("sys.usb.controller", &controller)?;
+    }
+    if skyward_sys::prop("sys.usb.config").as_deref() != Some("adb") {
+        skyward_sys::set_prop("sys.usb.config", "adb")?;
+    }
+    match skyward_sys::wait_prop("sys.usb.state", "adb", std::time::Duration::from_secs(10)) {
+        Ok(()) => {
+            skyward_sys::kmsg("the port answers as adb")?;
+            return Ok(());
+        }
+        Err(e) => skyward_sys::kmsg(&format!("adb not brought up on the port: {e:#}"))?,
+    }
+    // init's own action may have run before the controller was named, so the
+    // gadget was never bound; bind it now that the controller is known and
+    // adbd has made its function ready.
+    let ready = skyward_sys::prop("sys.usb.ffs.ready").as_deref() == Some("1");
+    let linked = Path::new("/config/usb_gadget/g1/configs/b.1/f1").exists();
+    if ready
+        && linked
+        && let Some(controller) = skyward_sys::prop("sys.usb.controller")
+        && Path::new("/config/usb_gadget/g1/UDC").exists()
+    {
+        match std::fs::write("/config/usb_gadget/g1/UDC", &controller) {
+            Ok(()) => skyward_sys::kmsg(&format!("the port is bound to {controller}"))?,
+            Err(e) => skyward_sys::kmsg(&format!("the port is not bound to {controller}: {e}"))?,
+        }
+    }
+    for name in ["sys.usb.controller", "sys.usb.config", "sys.usb.state", "sys.usb.ffs.ready", "init.svc.adbd"] {
+        log(name)?;
+    }
+    Ok(())
 }
 
 fn lp(super_dev: &Path, slot: Option<u32>) -> Result<()> {
@@ -575,7 +711,7 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     if found.as_deref().is_ok_and(keys::serves_elements) {
         registering.push(skyward_omapi::SERVICE.to_string());
     }
-    registering.extend(cfg.wlan.iter().map(|w| w.service.clone()));
+    registering.extend(cfg.wlan.iter().filter_map(|w| w.service.clone()));
     // A program may register more than the recovery waits for, as the
     // WLAN's supplicant registers its maker's own service beside
     // Android's, and ends where the directory turns one of them away. So
@@ -751,11 +887,25 @@ fn recovery() -> Result<()> {
             .with_context(|| format!("open {} to the recovery's other users", skyward_sys::RUN))?;
         skyward_sys::keep_log(Path::new(skyward_sys::LOG))?;
         // A recovery that ended with a function of its own in the port took
-        // the port with it; going through "none" takes that function off.
-        if skyward_sys::prop("sys.usb.state").is_some_and(|s| s != "adb") {
-            skyward_sys::usb::set("none", std::time::Duration::from_secs(5))?;
+        // the port with it. Instead of tearing the port down and building it
+        // again, ask for adb where the boot has not already and make sure the
+        // gadget is bound to the controller init names.
+        #[cfg(target_os = "android")]
+        if let Err(e) = bring_up_adb() {
+            skyward_sys::kmsg(&format!("adb not brought up: {e:#}"))?;
         }
-        skyward_sys::set_prop("sys.usb.config", "adb")?;
+        // Which mark the service directory reads has to be settled before
+        // anything asks it for a service: a recovery ramdisk may carry the
+        // installed system's own libbinder rather than the recovery copy.
+        #[cfg(target_os = "android")]
+        {
+            let settled = skyward_binder::driver::Binder::open()
+                .and_then(|binder| skyward_binder::service::choose_header(&binder));
+            match settled {
+                Ok(header) => skyward_sys::kmsg(&format!("the service directory reads the header {header:#x}"))?,
+                Err(e) => skyward_sys::kmsg(&format!("the service directory takes neither header mark: {e:#}"))?,
+            }
+        }
         let misc = bcb::misc();
         let message = bcb::read(&misc)?;
         let request = message.request();
@@ -806,6 +956,14 @@ fn recovery() -> Result<()> {
             Ok(done) => skyward_sys::kmsg(&format!("the CPUs run as the system runs them: {}", done.join(", ")))?,
             Err(e) => skyward_sys::kmsg(&format!("the CPUs run as the kernel started them: {e:#}"))?,
         }
+        // The panel shows the wordmark while the partitions are mounted and
+        // the phone's programs started, which takes a while; the pages take
+        // the panel back below.
+        #[cfg(target_os = "android")]
+        let splash = {
+            let root = Path::new("/");
+            splash::Splash::start(&cfg, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO))
+        };
         #[cfg(target_os = "android")]
         {
             use skyward_ui::app::Screen;
@@ -817,7 +975,16 @@ fn recovery() -> Result<()> {
             // shared blocks, which writes to the slot's own.
             let mut programs = cfg.services.clone();
             if !matches!(request.work, bcb::Work::Fastboot | bcb::Work::WipeAb { .. } | bcb::Work::UnshareBlocks) {
-                programs.extend(prepare(&cfg, booted_slot()?)?);
+                // What the installed system's partitions bring up may fail on
+                // a phone the recovery was not built for; the pages stay
+                // usable either way, and the reason goes to the kernel log.
+                match prepare(&cfg, booted_slot()?) {
+                    Ok(prepared) => programs.extend(prepared),
+                    Err(e) => skyward_sys::kmsg(&format!("the phone's programs were not prepared: {e:#}"))?,
+                }
+            }
+            if let Some(splash) = splash {
+                splash.stop();
             }
             let root = Path::new("/");
             ui::run(&cfg, &programs, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Home, None)
@@ -875,6 +1042,7 @@ fn info(config: &str) -> Result<()> {
     println!("screen        = {:?} in", i.screen);
     println!("os_version    = {:?}", i.os_version);
     println!("android       = {:?}", i.android);
+    println!("firmware      = {:?}", i.firmware);
     println!("patch         = {:?}", i.security_patch);
     println!("kernel        = {}", i.kernel);
     println!("storage       = {} bytes, free {:?}", i.storage.total, i.storage.free);

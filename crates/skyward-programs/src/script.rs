@@ -81,6 +81,14 @@ pub struct Script {
     pub actions: Vec<Action>,
 }
 
+/// The words a service's options begin with, which mean nothing outside a
+/// service: a phone may comment out a `service` line and leave its options
+/// behind, as this phone's HDCP key provisioner does.
+const OPTION_NAMES: [&str; 14] = [
+    "class", "user", "group", "capabilities", "socket", "setenv", "interface", "oneshot", "disabled", "override", "stdio_to_kmsg",
+    "priority", "writepid", "seclabel",
+];
+
 /// The section a line belongs to.
 enum Section {
     None,
@@ -117,7 +125,17 @@ pub fn read(text: &str) -> Result<Script> {
                     option(program, &words).with_context(|| format!("line {number}, of the service {}", program.name))?;
                 }
                 Section::Action => script.actions.last_mut().expect("an on section has begun").commands.push(words),
-                Section::None => bail!("line {number}: {first} begins no section, and no section has begun"),
+                Section::None => {
+                    // A phone's own files may comment out a `service` line and
+                    // leave its options behind, as this phone's HDCP key
+                    // provisioner does; they belong to nothing and are left
+                    // out. A line that is no option at all is still one this
+                    // recovery cannot read.
+                    ensure!(
+                        OPTION_NAMES.contains(&first.as_str()),
+                        "line {number}: {first} begins no section, and no section has begun"
+                    );
+                }
             },
         }
     }
@@ -396,7 +414,9 @@ mod tests {
 
     #[test]
     fn a_line_outside_any_section_is_refused() {
-        assert!(read("user system\n").is_err());
+        let leftover = read("user system\n").unwrap();
+        assert!(leftover.programs.is_empty(), "a phone may comment out a service line and leave its options behind");
+        assert!(read("frobnicate all\n").is_err(), "a line that begins no section, and is no option, is refused");
         assert!(read("service a\n").is_err(), "a service without its program");
         assert!(read("service a /a\n    user\n").is_err(), "a user line that names none");
         assert!(read("service a /a\n    setenv \"A\n").is_err(), "a quote left open");

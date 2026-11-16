@@ -172,6 +172,11 @@ impl Power {
 }
 
 pub fn power(target: Power) -> Result<()> {
+    // What was written to the phone's own partitions is put on them before
+    // anything ends the phone: a filesystem that is ended without this
+    // rolls back to its last checkpoint, as one the phone's own init ends
+    // picks the writes up with a sync of its own.
+    unsafe { libc::sync() };
     set_prop("sys.powerctl", target.command())
 }
 

@@ -934,7 +934,7 @@ mod tests {
             state: UpdateState::Merging as i32,
             sectors_allocated: 4_210_688,
             merge_phase: MergePhase::SecondPhase as i32,
-            source_build_fingerprint: "Xiaomi/ishtar/ishtar:13/TKQ1.221114.001/OS3.0.305.0.WMACNXM:user/release-keys".into(),
+            source_build_fingerprint: "samsung/p3q/p3q:13/TKQ1.221114.001/G9980ZHSGHZB1:user/release-keys".into(),
             ..UpdateStatus::default()
         };
         let told = std::cell::RefCell::new(Vec::new());

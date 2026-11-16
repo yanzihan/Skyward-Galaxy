@@ -112,10 +112,10 @@ mod tests {
         let stored = |name: &str, size| Stored { files: vec![format!("{name}.000")], size, stored: size / 2, compressed: true, sha256: "ab".repeat(32) };
         let m = Manifest {
             format: FORMAT,
-            device: "ishtar".into(),
+            device: "p3q".into(),
             made: 1_792_561_872,
             slot: "_b".into(),
-            system: Some("OS3.0.305.0.WMACNXM".into()),
+            system: Some("G9980ZHSGHZB1".into()),
             data_key: Some("00112233445566778899aabbccddeeff".into()),
             items: vec![
                 Item { part: Part::Boot, name: "boot".into(), stored: stored("boot", 201_326_592) },

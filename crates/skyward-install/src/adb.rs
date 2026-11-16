@@ -571,10 +571,10 @@ mod tests {
     #[test]
     fn the_banner_names_the_mode_and_the_product_like_adbd_does() {
         assert_eq!(
-            banner(SIDELOAD, "ishtar", "2304FPN6DC", "ishtar"),
-            b"sideload::ro.product.name=ishtar;ro.product.model=2304FPN6DC;ro.product.device=ishtar;features=".to_vec()
+            banner(SIDELOAD, "p3q", "SM-G9980", "p3q"),
+            b"sideload::ro.product.name=p3q;ro.product.model=SM-G9980;ro.product.device=p3q;features=".to_vec()
         );
-        assert!(banner(RESCUE, "ishtar", "2304FPN6DC", "ishtar").starts_with(b"rescue::"));
+        assert!(banner(RESCUE, "p3q", "SM-G9980", "p3q").starts_with(b"rescue::"));
     }
 
     #[test]
@@ -602,7 +602,7 @@ mod tests {
     fn props(name: &str) -> Option<String> {
         match name {
             BATTERY_LEVEL => Some("76".into()),
-            "ro.product.device" => Some("ishtar".into()),
+            "ro.product.device" => Some("p3q".into()),
             "ro.build.tags" => Some(String::new()),
             "ro.serialno" => Some("2674dc3e".into()),
             _ => None,
@@ -611,7 +611,7 @@ mod tests {
 
     #[test]
     fn rescue_answers_only_for_what_it_may_tell() {
-        assert_eq!(rescue_getprop("ro.product.device", props), "ishtar\n");
+        assert_eq!(rescue_getprop("ro.product.device", props), "p3q\n");
         assert_eq!(rescue_getprop(BATTERY_LEVEL, props), "76\n");
         assert_eq!(rescue_getprop("ro.serialno", props), "\n", "the serial is not rescue's to give");
         assert_eq!(rescue_getprop("ro.build.id", props), "\n", "a name with no value");
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn rescue_gives_all_it_may_tell_for_an_empty_name() {
-        assert_eq!(rescue_getprop("", props), "[rescue.battery_level]: [76]\n[ro.product.device]: [ishtar]\n");
+        assert_eq!(rescue_getprop("", props), "[rescue.battery_level]: [76]\n[ro.product.device]: [p3q]\n");
         assert_eq!(rescue_getprop("", |_| None), "\n");
     }
 

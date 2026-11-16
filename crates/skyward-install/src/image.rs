@@ -375,9 +375,9 @@ mod tests {
 
     #[test]
     fn skyward_carries_its_device_configuration() {
-        let config = device_config(&mut Cursor::new(skyward_for("ishtar"))).unwrap().expect("Skyward carries one");
-        assert_eq!(config, b"[device]\ncodename = \"ishtar\"\n");
-        assert!(is_skyward(&mut Cursor::new(skyward_for("ishtar"))).unwrap());
+        let config = device_config(&mut Cursor::new(skyward_for("p3q"))).unwrap().expect("Skyward carries one");
+        assert_eq!(config, b"[device]\ncodename = \"p3q\"\n");
+        assert!(is_skyward(&mut Cursor::new(skyward_for("p3q"))).unwrap());
         assert_eq!(device_config(&mut Cursor::new(recovery(false))).unwrap(), None);
     }
 

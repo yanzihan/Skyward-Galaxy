@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 mod avb;
 mod described;
 
-use skyward_bootimg::{BootImage, Ramdisk};
+use skyward_bootimg::{detect_format, BootHeader, BootImage, Ramdisk};
 
 /// Builds Skyward recovery images from a device's own stock images.
 #[derive(Parser)]
@@ -68,6 +68,25 @@ enum Cmd {
         /// The monospaced typeface's licence, which goes with it.
         #[arg(long)]
         mono_license: PathBuf,
+        /// Build on a third-party ramdisk (TWRP/OrangeFox) instead of a
+        /// stock one: its own recovery program is replaced the same way,
+        /// and the programs it keeps under the names the install scripts
+        /// use are pointed at the recovery binary too.
+        #[arg(long)]
+        third_party: bool,
+        /// Leave out the rules that switch the USB port to Skyward's own
+        /// file transfer, as a recovery built to be debugged over adb wants.
+        #[arg(long)]
+        no_mtp: bool,
+        /// A file to put in the ramdisk, as `host=/path/in/ramdisk`, for a
+        /// kernel module or the firmware a driver asks for by a fixed name.
+        #[arg(long = "add-file", value_name = "HOST=PATH")]
+        add_files: Vec<String>,
+        /// The partition's size, where the stock image is not the whole
+        /// partition as the phone or a full package holds it: a recovery
+        /// image taken out of a flashable zip carries no AVB footer.
+        #[arg(long)]
+        partition_size: Option<u64>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -116,8 +135,9 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Repack { image, out } => {
+            let format = detect_format(&BootImage::read(&image)?.ramdisk)?;
             let mut img = BootImage::read(&image)?;
-            img.ramdisk = Ramdisk::decode(&img.ramdisk)?.encode()?;
+            img.ramdisk = Ramdisk::decode(&img.ramdisk)?.encode_in(format)?;
             write(&out, &img, &img.to_bytes()?)
         }
         Cmd::Boot { kernel, ramdisk, out } => {
@@ -125,13 +145,19 @@ fn main() -> Result<()> {
             img.kernel = BootImage::read(&kernel)?.kernel;
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, out } => {
-            let size = partition_size(&stock)?;
+        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, third_party, no_mtp, add_files, partition_size: given, out } => {
+            let size = match given {
+                Some(n) => usize::try_from(n).context("partition size")?,
+                None => partition_size(&stock)?,
+            };
             let mut img = BootImage::read(&stock)?;
+            let format = detect_format(&img.ramdisk)?;
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
             // A stock recovery ramdisk has no third-party tree; refuse to build
-            // on top of another custom recovery.
-            if let Some(e) = rd.entries.iter().find(|e| e.name == "FFiles" || e.name.starts_with("twres")) {
+            // on top of another custom recovery unless asked to.
+            if !third_party
+                && let Some(e) = rd.entries.iter().find(|e| e.name == "FFiles" || e.name.starts_with("twres"))
+            {
                 anyhow::bail!("{} holds {}, which is not a stock recovery", stock.display(), e.name);
             }
             let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("read {}", p.display()));
@@ -142,7 +168,13 @@ fn main() -> Result<()> {
             // until it points here; the recovery binary is each of them.
             let (_, recovery) = paths::RECOVERY.rsplit_once('/').expect("the recovery binary is in a folder");
             for command in paths::COMMANDS {
-                rd.link(command, recovery)?;
+                if third_party {
+                    // A third-party ramdisk brings its own copies; each gives
+                    // way to the link to the recovery binary.
+                    rd.link_over(command, recovery)?;
+                } else {
+                    rd.link(command, recovery)?;
+                }
             }
             rd.add(paths::SYSTEM_INIT, 0o755, read(&system_init)?)?;
             rd.add(paths::CONFIG, 0o644, read(&config)?)?;
@@ -154,7 +186,13 @@ fn main() -> Result<()> {
             if rd.find(paths::TASK_PROFILES).is_none() {
                 rd.add(paths::TASK_PROFILES, 0o644, TASK_PROFILES.to_vec())?;
             }
-            rd.add(paths::MTP_RC, 0o644, MTP_RC.to_vec())?;
+            if !no_mtp {
+                rd.add(paths::MTP_RC, 0o644, MTP_RC.to_vec())?;
+            }
+            for file in &add_files {
+                let (host, into) = file.split_once('=').with_context(|| format!("{file} is not host=path"))?;
+                rd.add(into.trim_start_matches('/'), 0o644, read(&PathBuf::from(host))?)?;
+            }
             // On an unlocked device adbd keeps root when ro.secure is 0 and
             // lets any computer in without authorization when ro.adb.secure is
             // 0; init lets a later line of a property file override an earlier
@@ -168,7 +206,7 @@ fn main() -> Result<()> {
             let mut props = without(stock_props, &BUILD_VERSION);
             props.extend_from_slice(b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n");
             rd.replace(paths::PROP_DEFAULT, props)?;
-            img.ramdisk = rd.encode()?;
+            img.ramdisk = rd.encode_in(format)?;
             let bytes = img.to_bytes()?;
             write(&out, &img, &avb::footed(&bytes, "recovery", size, &Sha256::digest(&bytes))?)
         }
@@ -282,14 +320,20 @@ fn write(out: &Path, img: &BootImage, bytes: &[u8]) -> Result<()> {
 
 fn list(image: &Path) -> Result<()> {
     let img = BootImage::read(image)?;
-    let h = &img.header;
-    println!(
-        "header v{}  kernel {} bytes  ramdisk {} bytes  {:?}",
-        h.header_version(),
+    let (version, osversionpatch) = match &img.header {
+        BootHeader::Legacy(h) => (h.header_version(), h.osversionpatch),
+        BootHeader::RamdiskOnly(h) => (h.header_version(), h.osversionpatch),
+    };
+    print!(
+        "header v{version}  kernel {} bytes  ramdisk {} bytes  {:?}",
         img.kernel.len(),
         img.ramdisk.len(),
-        h.osversionpatch
+        osversionpatch
     );
+    if !img.dtb.is_empty() {
+        print!("  dtb {} bytes", img.dtb.len());
+    }
+    println!();
     if img.ramdisk.is_empty() {
         return Ok(());
     }
@@ -307,7 +351,7 @@ mod tests {
 
     #[test]
     fn the_lines_that_set_a_name_are_the_only_ones_left_out() {
-        let props = b"ro.build.id=TQ\nro.build.version.release=13\nro.build.version.release_or_codename=13\nro.product.name=ishtar\n\
+        let props = b"ro.build.id=TQ\nro.build.version.release=13\nro.build.version.release_or_codename=13\nro.product.name=p3q\n\
 ro.vendor.build.security_patch=2026-10-01\nro.vendor.build.security_patch_level=1\n";
         let out = without(props, &BUILD_VERSION);
         let text = String::from_utf8(out).expect("property files are text");
@@ -315,7 +359,7 @@ ro.vendor.build.security_patch=2026-10-01\nro.vendor.build.security_patch_level=
         assert!(!text.contains("ro.vendor.build.security_patch=2026-10-01"), "the vendor partition's patch level is left out too");
         assert!(text.contains("ro.build.version.release_or_codename=13"), "a longer name is left alone");
         assert!(text.contains("ro.vendor.build.security_patch_level=1"), "a longer name is left alone");
-        assert!(text.contains("ro.build.id=TQ") && text.contains("ro.product.name=ishtar"));
+        assert!(text.contains("ro.build.id=TQ") && text.contains("ro.product.name=p3q"));
     }
 
     #[test]

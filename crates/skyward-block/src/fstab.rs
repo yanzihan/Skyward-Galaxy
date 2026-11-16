@@ -4,8 +4,19 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Where the phone's own partitions keep the table.
-pub const FILES: [&str; 2] = ["/vendor/etc/fstab.qcom", "/odm/etc/fstab.qcom"];
+/// Where the phone's own partitions keep the table, the name the phone's
+/// own init is given first, then the names Samsung writes its tables under:
+/// one of them is there, and a name that is not is passed over. The table
+/// for the storage the phone has is the first of the Samsung names, its
+/// eMMC one only being there on a phone that has eMMC.
+pub const FILES: [&str; 6] = [
+    "/vendor/etc/fstab.qcom",
+    "/odm/etc/fstab.qcom",
+    "/vendor/etc/fstab.default",
+    "/odm/etc/fstab.default",
+    "/vendor/etc/fstab.emmc",
+    "/odm/etc/fstab.emmc",
+];
 
 /// One filesystem the phone knows about.
 #[derive(Debug, Clone, PartialEq, Eq)]

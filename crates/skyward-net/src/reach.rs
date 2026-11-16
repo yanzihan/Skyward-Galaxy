@@ -163,6 +163,6 @@ mod tests {
         let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port();
         let Reach::Offline(why) = probe(&format!("http://127.0.0.1:{port}/generate_204"), &[]) else { panic!("a closed port reaches nothing") };
         assert!(why.contains("could not reach 127.0.0.1"), "{why}");
-        assert!(matches!(probe("http://connect.rom.miui.com/generate_204", &[]), Reach::Offline(_)), "a name without a DNS server to ask");
+        assert!(matches!(probe("http://connectivitycheck.gstatic.com/generate_204", &[]), Reach::Offline(_)), "a name without a DNS server to ask");
     }
 }

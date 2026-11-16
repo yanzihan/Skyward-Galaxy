@@ -346,7 +346,7 @@ mod tests {
         let tmp = std::env::temp_dir();
         let (image, source) = (tmp.join(format!("skyward-erase-erofs-{}.img", std::process::id())), tmp.join(format!("skyward-erase-erofs-{}", std::process::id())));
         std::fs::create_dir_all(&source).unwrap();
-        std::fs::write(source.join("build.prop"), b"ro.product.device=ishtar\n").unwrap();
+        std::fs::write(source.join("build.prop"), b"ro.product.device=p3q\n").unwrap();
         // The ramdisk's mkfs.erofs makes an image file, not a filesystem on
         // a device.
         let made = std::process::Command::new("/system/bin/mkfs.erofs").arg(&image).arg(&source).output().unwrap();
