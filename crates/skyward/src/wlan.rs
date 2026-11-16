@@ -620,8 +620,8 @@ impl Station {
     }
 }
 
-/// Load the driver where its interface is not there yet, and bring the
-/// interface up.
+/// Load the driver where its interface is not there yet, say what the
+/// driver reads as it starts, and bring the interface up.
 fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
     let net = Path::new("/sys/class/net").join(&cfg.interface);
     if !net.exists() {
@@ -631,14 +631,18 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
         for path in skyward_modules::load(modules, &cfg.modules)? {
             skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
         }
-        for w in &cfg.writes {
-            fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;
-        }
         let until = Instant::now() + INTERFACE_WAIT;
         while !net.exists() {
             ensure!(Instant::now() < until, "the driver made no {} in {} seconds", cfg.interface, INTERFACE_WAIT.as_secs());
             thread::sleep(Duration::from_millis(100));
         }
+    }
+    // A driver the phone's own kernel carries makes its interface as the
+    // kernel starts, before any of these files can be there, and reads
+    // them only once the interface is brought up: they are written
+    // whether the interface waited for the driver or came with the kernel.
+    for w in &cfg.writes {
+        fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;
     }
     iface::set_up(&cfg.interface, true)
 }
@@ -679,14 +683,30 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     if socket.exists() {
         fs::remove_file(&socket).with_context(|| format!("take away {}", socket.display()))?;
     }
-    let mut path: Vec<String> = cfg.libraries.clone();
-    if let Some(dir) = libraries {
-        path.push(dir.to_string_lossy().into_owned());
+    // The bundle of the vendor interface's libraries is searched where the
+    // configuration puts it; where the configuration does not name it,
+    // after every folder it does, as it always was.
+    let mut path: Vec<String> = Vec::with_capacity(cfg.libraries.len() + 1);
+    for dir in &cfg.libraries {
+        if dir.as_str() == skyward_config::BUNDLE_PLACEHOLDER {
+            if let Some(at) = libraries {
+                path.push(at.to_string_lossy().into_owned());
+            }
+        } else {
+            path.push(dir.clone());
+        }
     }
-    let mut child = Process::new(&cfg.supplicant)
-        .args(["-i", &cfg.interface, "-D", "nl80211", "-c"])
-        .arg(&settings)
-        .env("LD_LIBRARY_PATH", path.join(":"))
+    if !cfg.libraries.iter().any(|dir| dir.as_str() == skyward_config::BUNDLE_PLACEHOLDER)
+        && let Some(at) = libraries
+    {
+        path.push(at.to_string_lossy().into_owned());
+    }
+    let mut start = Process::new(&cfg.supplicant);
+    start.args(["-i", &cfg.interface, "-D", "nl80211", "-c"]).arg(&settings).env("LD_LIBRARY_PATH", path.join(":"));
+    if !cfg.preload.is_empty() {
+        start.env("LD_PRELOAD", cfg.preload.join(":"));
+    }
+    let mut child = start
         .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::null())

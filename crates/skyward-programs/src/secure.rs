@@ -105,6 +105,34 @@ pub(crate) fn libraries_of(path: &str, bundle: Option<&Path>) -> Vec<String> {
     own.iter().map(|l| l.to_string()).chain(bundle).chain(shared.iter().map(|l| l.to_string())).collect()
 }
 
+/// The folders a hardware service finds its libraries in, in the order the
+/// phone's own hardware namespace looks in them: the libraries of its
+/// partition and of the vendor partition, the hardware folder beside them,
+/// then the bundle of the libraries the phone was built against, and last
+/// what the recovery and the installed system carry that none of those
+/// has. The recovery's own folder is not looked in first: it carries
+/// older copies of the libraries the hardware service is built against,
+/// and loading those is what the phone's namespace is meant to prevent.
+fn hardware_libraries_of(path: &str, bundle: Option<&Path>) -> Vec<String> {
+    let own: &[&str] = match path.split('/').nth(1) {
+        Some("odm") => &["/odm/lib64", "/vendor/lib64", "/vendor/lib64/hw"],
+        _ => &["/vendor/lib64", "/vendor/lib64/hw"],
+    };
+    let bundle = bundle.map(|dir| dir.to_string_lossy().into_owned());
+    own.iter()
+        .map(|l| l.to_string())
+        .chain(bundle)
+        .chain(std::iter::once("/system/lib64".to_string()))
+        .chain(SHARED_LIBRARIES.iter().map(|l| l.to_string()))
+        .collect()
+}
+
+/// The recovery's C++ runtime, which a hardware service loads ahead of the
+/// one the bundle carries: the phone's logs, which the service and the
+/// bundle's libraries both use, are built against the recovery's, and a
+/// newer runtime runs what was built for an older one.
+const RECOVERY_CXX: &str = "/system/lib64/libc++.so";
+
 /// A program to start, with what init gives it that a recovery has to
 /// give it too.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,25 +189,39 @@ pub fn steps(phone: &Phone) -> Result<Vec<Step>> {
         }
     }
 
-    ensure!(described(phone, Kind::Aidl, KEYS).is_some(), "the phone describes no {KEYS}");
-    let keys = behind(phone, "the key service", KEYS, |file| file.contains("keymint") && !file.contains("strongbox"))?;
-    let with_keys = |d: &Described| d.instance == INSTANCE && KEY_PACKAGES.contains(&d.package.as_str());
-    start(&mut out, started(phone, keys, Ready::Service(KEYS.into()), besides(phone, keys, KEYS, with_keys)));
-
+    // The key service is of the newer kind where the phone describes one,
+    // and of the older kind otherwise: the phone its vendor was built for
+    // is what decides, as Android's own keystore reads the same
+    // descriptions and reaches the older kind over the driver the hardware
+    // services talk on.
+    let (keys, keys_kind) = match described(phone, Kind::Aidl, KEYS).is_some() {
+        true => (KEYS.to_string(), Kind::Aidl),
+        false => offered(phone, ("android.hardware.keymaster", "IKeymasterDevice")).context("the phone describes no key service")?,
+    };
     let (credentials, credentials_kind) = offered(phone, CREDENTIALS).context("the phone describes no credential service")?;
-    let (boot, boot_kind) = offered(phone, BOOT).context("the phone describes no boot control")?;
-    if credentials_kind == Kind::Hidl || boot_kind == Kind::Hidl {
-        let directory = phone
-            .programs
-            .iter()
-            .find(|p| p.name == HARDWARE_DIRECTORY && phone.carries(p))
-            .context("the phone has hardware services of the older kind, and no directory for them among the programs its scripts name")?;
-        start(&mut out, started(phone, directory, Ready::Property(HARDWARE_DIRECTORY_READY), Vec::new()));
+    // A phone without a second slot has nothing to control: Android's boot
+    // control is described only where there is a slot to switch to.
+    let boot = offered(phone, BOOT);
+    let hardware_kinds = [Some(keys_kind), Some(credentials_kind), boot.as_ref().map(|(_, kind)| *kind)];
+    if hardware_kinds.contains(&Some(Kind::Hidl)) {
+        // The phone's own directory for hardware services is started where
+        // its scripts name one; a recovery that carries its own has that
+        // one running already, and the services register with it as they
+        // would with the phone's.
+        if let Some(directory) = phone.programs.iter().find(|p| p.name == HARDWARE_DIRECTORY && phone.carries(p)) {
+            start(&mut out, started(phone, directory, Ready::Property(HARDWARE_DIRECTORY_READY), Vec::new()));
+        }
     }
     let ready = |name: String, kind: Kind| match kind {
         Kind::Aidl => Ready::Service(name),
         Kind::Hidl => Ready::HardwareService(name),
     };
+    let program = behind(phone, "the key service", &keys, |file| {
+        (file.contains("keymint") || file.contains("keymaster")) && !file.contains("strongbox")
+    })?;
+    let with_keys = |d: &Described| d.instance == INSTANCE && KEY_PACKAGES.contains(&d.package.as_str());
+    let registers = besides(phone, program, &keys, with_keys);
+    start(&mut out, started(phone, program, ready(keys.clone(), keys_kind), registers));
     let alone = |_: &Described| false;
     let program = behind(phone, "the credential service", &credentials, |file| file.contains("gatekeeper"))?;
     let registers = besides(phone, program, &credentials, alone);
@@ -189,9 +231,11 @@ pub fn steps(phone: &Phone) -> Result<Vec<Step>> {
         out.extend(weaver(phone)?);
     }
 
-    let program = behind(phone, "the boot control", &boot, |file| file.starts_with(BOOT.0))?;
-    let registers = besides(phone, program, &boot, alone);
-    start(&mut out, started(phone, program, ready(boot, boot_kind), registers));
+    if let Some((boot, boot_kind)) = boot {
+        let program = behind(phone, "the boot control", &boot, |file| file.starts_with(BOOT.0))?;
+        let registers = besides(phone, program, &boot, alone);
+        start(&mut out, started(phone, program, ready(boot, boot_kind), registers));
+    }
     Ok(out)
 }
 
@@ -348,7 +392,16 @@ fn behind<'a>(phone: &'a Phone, what: &str, name: &str, matches: impl Fn(&str) -
         Some(service) => may.iter().copied().filter(|p| !p.script.is_empty() && stem(&p.script) == stem(&service.file)).collect(),
         None => Vec::new(),
     };
-    let matching: Vec<&Program> = may.iter().copied().filter(|p| matches(file_name(p))).collect();
+    // A program whose script says it registers some other instance of
+    // this interface is not the one asked for, as a vendor's own build of
+    // a service beside the phone's is not: the one that says nothing
+    // registers what its file is named after.
+    let matching: Vec<&Program> = may
+        .iter()
+        .copied()
+        .filter(|p| matches(file_name(p)))
+        .filter(|p| p.interfaces.is_empty() || p.interfaces.iter().any(|i| i == name))
+        .collect();
     for candidates in [saying, described_with, matching] {
         if let Some(program) = one(phone, what, candidates)? {
             return Ok(program);
@@ -384,10 +437,19 @@ fn started(phone: &Phone, program: &Program, ready: Ready, registers: Vec<String
         Ready::Service(name) => (None, Some(name), None),
         Ready::HardwareService(name) => (None, None, Some(name)),
     };
+    let hardware = ready_hardware_service.is_some();
+    let libraries = match hardware {
+        true => hardware_libraries_of(&program.path, phone.bundle.as_deref()),
+        false => libraries_of(&program.path, phone.bundle.as_deref()),
+    };
+    let mut environment = program.environment.clone();
+    if hardware {
+        environment.push(("LD_PRELOAD".to_string(), RECOVERY_CXX.to_string()));
+    }
     let service = Service {
         path: phone.started_from(&program.path),
         args: program.args.clone(),
-        libraries: libraries_of(&program.path, phone.bundle.as_deref()),
+        libraries,
         oneshot: false,
         ready_property,
         ready_service,
@@ -398,5 +460,5 @@ fn started(phone: &Phone, program: &Program, ready: Ready, registers: Vec<String
         groups: program.groups.clone(),
         capabilities: program.capabilities.clone().unwrap_or_default(),
     };
-    Started { service, sockets: program.sockets.clone(), environment: program.environment.clone(), anew: false }
+    Started { service, sockets: program.sockets.clone(), environment, anew: false }
 }
