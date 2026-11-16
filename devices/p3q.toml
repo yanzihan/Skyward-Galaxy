@@ -1,0 +1,71 @@
+[device]
+codename = "p3q"
+brand = "Samsung"
+model = "Galaxy S21 Ultra 5G"
+# 三星不用 A/B 无缝更新:boot/recovery 等分区不带 _a/_b 后缀
+ab = false
+soc = { hans = "骁龙®888移动平台", hant = "Snapdragon® 888 行動平台", en = "Snapdragon® 888 Mobile Platform" }
+# OS 版本显示 ro.build.display.id:这是各 ROM 通用的"系统版本"字段,
+# 三星原厂是 OneUI 的版本号、Flyme 是 "Flyme x.y"、Lineage 是 lineage 的构建号,
+# 换 ROM 时自动跟着变,不要钉死某个厂商私有的属性。
+os_version_prop = "ro.build.display.id"
+
+[display]
+width = 1440
+height = 3200
+# WQHD+ 模式的密度;真机上按系统实际 lcd_density 校准
+density = 500
+diagonal = 6.8
+# S21 Ultra 的圆角半径(1440 宽下);按真机效果微调
+corner_radius = 60
+
+[modules]
+# recovery 用 Fox recovery.img 的基底内核,它没有把 dhd 编进内核
+# (kallsyms 里没有任何 dhd 符号);系统 boot 的内核才是 CONFIG_BCM_DHD_WLAN=y
+# 的那份。所以 recovery 里要加载与这个基底内核匹配的 dhd.ko,
+# 由下面 [wlan].modules 在开 WLAN 时装入。
+sources = ["vendor_boot"]
+load = []
+
+# WLAN:Broadcom dhd 驱动 + 三星自带的 wpa_supplicant。固件放在 ramdisk 的
+# /system/etc/wifi(/etc 指向它),正是内核配置里的 FW/NVRAM 路径。
+# dhd.ko 由同一棵 p3q 内核树构建、与 Fox 基底内核的 vermagic/符号 CRC 匹配,
+# 模块的默认固件路径就是 /etc/wifi/bcmdhd_sta.bin 与 nvram_net.txt。
+[wlan]
+modules = ["dhd"]
+interface = "wlan0"
+supplicant = "/vendor/bin/hw/wpa_supplicant"
+# supplicant 是原厂 Android 11 的 vendor 程序,但移植包的 /vendor/lib64 缺了
+# 它要的 VNDK30 HIDL 库(android.hardware.wifi{,.supplicant}@1.x),libssl 也被
+# 换成了与旧 libcrypto 不配对的新版。这两样按原厂固件的 VNDK 30 APEX 补在
+# /system/wifi-vndk/lib64,排在最前使它们先于 vendor 里的同名库被找到。
+# 不要预加载 recovery 的 libc++;vendor 的 libbinder 要的 __hash_memory
+# 只有 vendor 自己的 libc++ 才有。
+libraries = ["/system/wifi-vndk/lib64", "/vendor/lib64", "$bundle", "/system/lib64", "/mnt/system/system/lib64"]
+probe = "http://connectivitycheck.gstatic.com/generate_204"
+
+[backup]
+# 三星自己的 NV 分区(SEC_EFS 是安全侧的 EFS)加上高通的基带设置分区
+efs = ["efs", "sec_efs", "modemst1", "modemst2", "fsg", "fsc"]
+
+# 震动:三星的 vibrator 驱动走 timed_output,给 enable 写毫秒数就震动,
+# 没有 force-feedback 输入设备;强度节点 intensity 由驱动自己处理。
+[haptics]
+# 下限压到 0.2(=2000/10000),最轻的一档别太实
+strength = { lightest = 0.2, strongest = 1.0 }
+
+[haptics.timed]
+duration = "/sys/class/timed_output/vibrator/enable"
+# 强度跟滑杆走:驱动收 0..10000,10000 是最强
+intensity = "/sys/class/timed_output/vibrator/intensity"
+intensity_max = 10000
+click = 30
+ticks = 12
+
+[wipe]
+logs = [
+    "/data/log",
+    "/data/vendor/log",
+    "/data/vendor/tombstones",
+    "/data/vendor/wifi",
+]
