@@ -1,9 +1,30 @@
 use anyhow::{bail, Context, Result};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 /// The mark libbinder writes into every call header. Both ends have to agree
 /// on it: it tells apart the copies of libbinder a phone carries, and the one
 /// the recovery's own programs are built from is the recovery copy.
-const HEADER: i32 = i32::from_be_bytes(*b"RECO");
+pub const HEADER_RECOVERY: i32 = i32::from_be_bytes(*b"RECO");
+
+/// The mark a libbinder built for the installed system writes. A recovery
+/// ramdisk that carries the system's own copy, as this phone's does, takes
+/// only this one.
+pub const HEADER_SYSTEM: i32 = i32::from_be_bytes(*b"SYST");
+
+/// Which mark the calls made from here carry, settled by
+/// [`crate::service::choose_header`] before the first call to the service
+/// directory. The recovery's own copy is what a recovery ramdisk usually
+/// carries, so that is what stands until the directory says otherwise.
+static HEADER: AtomicI32 = AtomicI32::new(HEADER_RECOVERY);
+
+/// Make every call written from here carry `header`.
+pub fn use_header(header: i32) {
+    HEADER.store(header, Ordering::Relaxed);
+}
+
+fn header() -> i32 {
+    HEADER.load(Ordering::Relaxed)
+}
 
 /// Strict mode gathers violations rather than acting on them; a caller with
 /// no policy of its own still sets that bit.
@@ -76,7 +97,7 @@ impl Parcel {
         let mut p = Parcel::default();
         p.i32(STRICT_MODE_PENALTY_GATHER);
         p.i32(UNSET_WORK_SOURCE);
-        p.i32(HEADER);
+        p.i32(header());
         p.string(interface);
         p
     }

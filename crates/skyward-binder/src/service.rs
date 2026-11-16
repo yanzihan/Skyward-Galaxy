@@ -157,6 +157,30 @@ pub fn declared(binder: &crate::driver::Binder, name: &str) -> Result<bool> {
     read.bool().with_context(|| format!("read whether {name} is described"))
 }
 
+/// A name no phone's directory has, asked for to tell which mark the
+/// directory reads.
+const PROBE: &str = "skyward.header.probe";
+
+/// Settle which mark the calls made from here carry, and answer it. A
+/// directory that reads the mark answers for the probe name that it has
+/// none; one built for another copy of libbinder turns the call away
+/// before reading it. The recovery's own copy is the usual one, but a
+/// recovery ramdisk that carries the installed system's copy, as this
+/// phone's does, takes only the system mark.
+#[cfg(target_os = "android")]
+pub fn choose_header(binder: &crate::driver::Binder) -> Result<i32> {
+    for header in [crate::parcel::HEADER_SYSTEM, crate::parcel::HEADER_RECOVERY] {
+        crate::parcel::use_header(header);
+        if find(binder, PROBE).is_ok() {
+            return Ok(header);
+        }
+    }
+    // Neither mark was taken: ask once more with the last one tried, so the
+    // caller hears why the directory turns the calls away.
+    find(binder, PROBE)?;
+    Ok(crate::parcel::HEADER_RECOVERY)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

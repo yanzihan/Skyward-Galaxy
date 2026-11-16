@@ -9,8 +9,17 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Where a phone keeps the bundles of shared libraries its own partitions
-/// were built against.
-const BUNDLE_DIRS: [&str; 4] = ["/mnt/system_ext/apex", "/mnt/system/system/apex", "/mnt/product/apex", "/vendor/apex"];
+/// were built against. On a phone whose system_ext is a folder of the
+/// system partition rather than a partition of its own, the bundles there
+/// are reached under it.
+const BUNDLE_DIRS: [&str; 6] = [
+    "/mnt/system_ext/apex",
+    "/mnt/system/system/system_ext/apex",
+    "/mnt/system/system/apex",
+    "/mnt/product/apex",
+    "/vendor/apex",
+    "/odm/apex",
+];
 
 /// The file inside a bundle that holds its filesystem. It is stored whole,
 /// so the bundle can be opened where it lies.
@@ -158,9 +167,36 @@ fn describe_hardware(wanted: &[String]) -> Result<String> {
 /// Open the bundle of libraries the phone's own partitions were built
 /// against and give the directory they are in. A phone whose partitions
 /// need no bundle has none to open.
+///
+/// Which build of the vendor interface that is is named by a property the
+/// running system sets; a recovery sets none of its own, so where that is
+/// missing the newest bundle the partitions carry is the one opened, which
+/// is the one their programs were built against where a phone ships more
+/// than one.
 pub fn libraries() -> Result<Option<PathBuf>> {
-    let Some(version) = skyward_sys::prop(VENDOR_INTERFACE) else { return Ok(None) };
+    let version = match skyward_sys::prop(VENDOR_INTERFACE) {
+        Some(version) => version.trim().parse::<u32>().unwrap_or(0),
+        None => 0,
+    };
+    let version = if version > 0 { Some(version) } else { newest_bundle()? };
+    let Some(version) = version else { return Ok(None) };
     Ok(bundle(&format!("com.android.vndk.v{version}"))?.map(|at| at.join(BUNDLE_LIBS)))
+}
+
+/// The newest build of the vendor interface whose bundle the phone's
+/// partitions carry, as the number in its name.
+fn newest_bundle() -> Result<Option<u32>> {
+    let mut newest = None;
+    for dir in BUNDLE_DIRS {
+        let Ok(entries) = fs::read_dir(dir) else { continue };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(rest) = name.to_string_lossy().strip_prefix("com.android.vndk.v").map(str::to_string) else { continue };
+            let Some(number) = rest.strip_suffix(".apex").and_then(|n| n.parse::<u32>().ok()) else { continue };
+            newest = Some(newest.map_or(number, |newest: u32| newest.max(number)));
+        }
+    }
+    Ok(newest)
 }
 
 /// Open the bundle of this name where it lies, and give where it is. A

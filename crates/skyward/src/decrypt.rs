@@ -5,7 +5,7 @@
 use anyhow::Result;
 use skyward_binder::driver::Binder;
 use skyward_crypto::data::{self, Closed, Opening};
-use skyward_crypto::keymint::KeyMint;
+use skyward_crypto::Service;
 use skyward_sys::worker::Worker;
 use std::os::fd::RawFd;
 
@@ -56,10 +56,10 @@ impl Decryptor {
 
 /// Do `work` with the phone's key service, reached afresh for it, and say
 /// why it failed in words for the page.
-pub fn with_key_service<T>(work: impl FnOnce(&KeyMint) -> Result<T>) -> Result<T, String> {
+pub fn with_key_service<T>(work: impl FnOnce(&Service<'_>) -> Result<T>) -> Result<T, String> {
     let done = (|| {
-        let binder = Binder::open()?;
-        let service = KeyMint::open(&binder)?;
+        let (binder, hardware) = (Binder::open()?, Binder::hardware()?);
+        let service = Service::open(&binder, &hardware)?;
         work(&service)
     })();
     done.map_err(|e| format!("{e:#}"))
