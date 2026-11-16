@@ -38,7 +38,11 @@ read and set properties.
 
 ### Online updates
 
-![Update the system and Skyward online](slides/en/out/05-updates.png)
+![Update Skyward online](slides/en/out/05-updates.png)
+
+Skyward updates itself over Wi-Fi from its newest release on GitHub, writing the
+build for the phone into the recovery partitions. System packages still install
+from the Install page.
 
 ### Backup and restore
 
@@ -87,126 +91,31 @@ read and set properties.
 
 ## Supported devices
 
-| Device | Codename | Tested system version |
-| --- | --- | --- |
-| Xiaomi 17 Ultra | `nezha` | OS4.0.4.0.XPACNXM (Android 17) |
-| Xiaomi 13 Ultra | `ishtar` | OS3.0.308.0.WMACNXM (Android 16) |
-
-### 🚧 Under construction
-
-These images are built from each phone's stock firmware and have not been tried
-on the phone. They set up the screen, touch, Wi-Fi and vibration. The programs that
-decrypting the data partition takes are read on the phone from the installed
-system's own init scripts and service descriptions; what is read has been checked
-against each model's stock firmware, and how those programs run on these models has
-not been verified.
-
 | Device | Codename | Built on |
 | --- | --- | --- |
-| 🚧 Xiaomi 13 | `fuxi` | OS3.0.309.0.WMCCNXM (Android 16) |
-| 🚧 Xiaomi 13 Pro | `nuwa` | OS3.0.312.0.WMBCNXM (Android 16) |
-| 🚧 Xiaomi 14 | `houji` | OS3.0.307.0.WNCCNXM (Android 16) |
-| 🚧 Xiaomi 14 Pro | `shennong` | OS3.0.309.0.WNBCNXM (Android 16) |
-| 🚧 Xiaomi 14 Ultra | `aurora` | OS3.0.308.0.WNACNXM (Android 16) |
-| 🚧 Xiaomi 15 | `dada` | OS3.0.307.0.WOCCNXM (Android 16) |
-| 🚧 Xiaomi 15 Pro | `haotian` | OS3.0.309.0.WOBCNXM (Android 16) |
-| 🚧 Xiaomi 15 Ultra | `xuanyuan` | OS3.0.314.0.WOACNXM (Android 16) |
-| 🚧 Xiaomi 17 | `pudding` | OS4.0.4.0.XPCCNXM (Android 17) |
-| 🚧 Xiaomi 17 Pro | `pandora` | OS4.0.4.0.XBLCNXM (Android 17) |
-| 🚧 Xiaomi 17 Pro Max | `popsicle` | OS4.0.4.0.XPBCNXM (Android 17) |
-| 🚧 Xiaomi 17 Max | `byron` | OS3.0.310.0.WAFCNXM (Android 16) |
-| 🚧 REDMI K80 | `zorn` | OS3.0.309.0.WOKCNXM (Android 16) |
-| 🚧 REDMI K80 Pro | `miro` | OS3.0.305.0.WOMCNXM (Android 16) |
-| 🚧 REDMI K90 | `annibale` | OS3.0.307.0.WPKCNXM (Android 16) |
-| 🚧 REDMI K90 Pro Max | `myron` | OS4.0.4.0.XPMCNXM (Android 17) |
-| 🚧 REDMI K90 Ultra | `warsaw` | OS3.0.309.0.WHPCNXM (Android 16) |
-| 🚧 REDMI K100 Pro | `athens` | OS4.0.4.0.XPICNXM (Android 17) |
-| 🚧 REDMI K100 Pro Max | `songyuan` | OS4.0.4.0.XGNCNXM (Android 17) |
+| Galaxy S21 Ultra 5G | `p3q` | OrangeFox recovery for the phone's stock Android 11 vendor |
+| Galaxy S20+ 5G | `y2q` | OrangeFox recovery for the phone's stock vendor |
+
+Both are A-only Samsung phones: no partition carries a slot suffix, and the
+recovery is built on an OrangeFox recovery image, because a Samsung stock recovery
+does not start on them. The base images are published as the `base-images`
+release of this repository, each named `<codename>-fox-recovery.img`. The S21
+Ultra's image also takes the kernel module, firmware and vendor interface
+libraries its recovery kernel leaves out, laid out as they go into the ramdisk in
+`p3q-files.zip` in the same release; the S20+'s needs none.
 
 ## Installing Skyward
 
 Skyward needs an unlocked bootloader. Download the zip for your phone from
-[Releases](https://github.com/kirklin/skyward/releases), where each shows as the
-phone's model and codename, such as Xiaomi 17 Ultra (nezha). Check it against
-`SHA256SUMS`, unzip it, and flash the image inside to the recovery partition of
-the slot the phone runs from, with the phone in fastboot mode:
+[Releases](https://github.com/yanzihan/Skyward-Galaxy/releases), where each shows
+as the phone's model and codename, such as Galaxy S21 Ultra 5G (p3q). Check it
+against `SHA256SUMS`, unzip it, and flash the image inside to the recovery
+partition, with the phone in fastboot mode:
 
 ```sh
-unzip skyward-v0.3.1-nezha-OS4.0.4.0.XPACNXM.zip
-fastboot flash recovery skyward-v0.3.1-nezha-OS4.0.4.0.XPACNXM.img
+unzip skyward-v0.3.1-p3q-base.zip
+fastboot flash recovery skyward-v0.3.1-p3q-base.img
 fastboot reboot recovery
-```
-
-Afterwards Skyward updates itself over Wi-Fi from its newest release, on the
-Skyward update page in Settings; a newer image, unzipped, also installs from its own
-Install page. With **Flash Skyward again** on, a system update or zip that writes
-over the recovery partitions gets Skyward back in them.
-
-adb in Skyward is a root shell that needs no authorization on the phone: anyone
-with the phone and a cable can reach its storage while it is in recovery.
-
-## How dual boot works
-
-Skyward installs a second system beside the one in the phone's own partitions,
-whether that is HyperOS or a custom ROM, and switches between them from **Dual boot**
-on its home page. The second system's root is a file in the data partition that the
-filesystem may neither move nor delete, read and written through the partition
-itself; the boot images of both systems are kept in another such file. A switch
-writes only the boot and init_boot partitions of the slot that starts next, and
-keeps each step on /metadata first, so a switch cut off by a loss of power is
-finished when Skyward next starts. vendor_boot, dtbo, recovery, vbmeta, the firmware
-and super stay as they are, and the second system starts with the installed
-system's vendor_boot and dtbo.
-
-Before anything else writes the boot partitions, Skyward puts the installed system's
-boot images back: an install, a slot switch, fastboot, a factory reset, and a backup
-or restore of the boot partitions. The second system waits while a system update is
-still to be merged, and backups of the data partition leave it out.
-
-A second system installs from a zip on the Install page, as any other package does:
-
-| File | What it holds |
-| --- | --- |
-| `system.toml` | `id`, `name`, `version` and `filesystem`; `init`, the program the root starts with, `/sbin/init` unless given; `minimum`, the least room the root takes, in bytes |
-| `boot.img` | The kernel the bootloader starts |
-| `rootfs.img` | The root filesystem's image, of the `filesystem` named |
-| `init_boot.img` | Only for a system with a first ramdisk of its own |
-
-A system without an init_boot image of its own starts from one Skyward makes. Its
-program loads the installed system's first-stage kernel modules the way that
-system's first stage loads them, with their soft dependencies and the settings the
-kernel command line gives them, finds the root in the data partition, mounts it and
-starts `init` there. If anything stops it, it brings Skyward up, as a failed start
-of the installed system ends in the recovery: it leaves the reason in misc, unpacks
-the ramdisk of the slot's recovery partition over its own, as the kernel unpacks it
-when the bootloader starts the recovery, and hands over to Skyward's first program,
-so Skyward comes up however the bootloader treats a restart. Skyward shows why, and
-the second system still starts next until the user switches on Dual boot. A start
-that stops moving restarts into the recovery instead, and a phone restarted before
-the hand-over finds the same request in misc at its next start, which brings
-Skyward up before anything else. Where Skyward comes up neither way, the phone stays
-where it stopped, and never starts the same again and again. A system with a first
-ramdisk of its own finds Skyward's program at `/skyward/map`, which lays the root
-out as a block device and prints its node. Each switch to the second system writes
-its init_boot image with the program of the Skyward that switches, so an updated
-Skyward starts it with the new program.
-
-A running system switches by writing `boot-recovery` with
-`--switch_system=installed`, or `--switch_system=` and the second system's `id`, to
-misc, and restarting into recovery. Where the bootloader starts the slot again, as
-the 13 Ultra's can with a USB cable in, Skyward's program finds the request in misc
-at the next start and brings Skyward up before anything else.
-
-## Building
-
-Skyward builds with the version of Rust that `rust-toolchain.toml` names, with its
-`aarch64-linux-android` target, the Android NDK r29 and
-[cargo-ndk](https://github.com/bbqsrc/cargo-ndk). The recovery service is built for
-the phone, and the packer for the computer:
-
-```sh
-cargo ndk -t arm64-v8a --platform 30 build --release -p skyward
-cargo build --release -p skyward-pack
 ```
 
 The second system's first program runs before any library is there to load, so it
@@ -216,34 +125,29 @@ is built as a static program:
 RUSTFLAGS="-C target-feature=+crt-static" cargo ndk -t arm64-v8a --platform 30 build --release -p skyward-system-init --target-dir target/system-init
 ```
 
-The packer takes the stock recovery partition out of the build's full update
-package on Xiaomi's server, reading only the part of the package the partition is
-in, and checks its SHA-256 against the device file:
-
-```sh
-target/release/skyward-pack stock --config devices/nezha.toml --out target/stock/nezha/recovery.img
-```
-
-Then it builds the image on top of it:
+A Samsung phone is built on its OrangeFox recovery image, which is the whole
+recovery partition and ends in an AVB footer (the `base-images` release of this
+repository holds one per phone):
 
 ```sh
 target/release/skyward-pack recovery \
-  --stock target/stock/nezha/recovery.img \
+  --stock p3q-fox-recovery.img \
   --binary target/aarch64-linux-android/release/skyward \
   --system-init target/system-init/aarch64-linux-android/release/system-init \
-  --config devices/nezha.toml \
+  --config devices/p3q.toml \
   --font resources/fonts/MiSansVF.ttf \
   --mono resources/fonts/KirkMono-Regular.ttf \
   --mono-license resources/fonts/KirkMono-OFL.txt \
-  --out target/skyward-nezha.img
+  --third-party --no-mtp \
+  --out target/skyward-p3q.img
 ```
 
-Tests and lints run on the computer; what runs only on the phone is linted for it:
+A device whose configuration names a `[stock]` build instead has its recovery
+partition taken out of that build's full update package, over HTTPS, and checked
+against the SHA-256 the configuration gives:
 
 ```sh
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo ndk -t arm64-v8a --platform 30 clippy --workspace --all-targets -- -D warnings
+target/release/skyward-pack stock --config devices/<codename>.toml --out stock/recovery.img
 ```
 
 The tests whose names start with `on_the_phone` make filesystems, mount them and

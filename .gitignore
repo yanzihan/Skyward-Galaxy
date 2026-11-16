@@ -1,4 +1,22 @@
 target/
+# Local build inputs and outputs: base recovery images, stock dumps, signing
+# keys (work/avb-keys/*.pem), vendor blobs, screenshots and debug logs. The
+# base images and the files a phone's image needs go to the `base-images`
+# release instead.
+work/
+# Third-party recovery archives and local tool state belong in the release
+# assets, not in the source tree.
+OrangeFox-*
+*.img.tar
+.mimosa/
+# One-off debugging helpers stay on the machine that made the images; the
+# build scripts below are the source tree's.
+scripts/*
+!scripts/build-model.sh
+!scripts/build-p3q.sh
+!scripts/build-y2q.sh
+!scripts/build-aarch64.sh
+!scripts/subset-font.py
 .idea/
 .vscode/
 .DS_Store

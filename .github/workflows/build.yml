@@ -120,10 +120,27 @@ jobs:
           path: tools
       - name: Make the tools runnable
         run: chmod +x tools/skyward tools/skyward-pack
+      # A device whose [stock] build is named takes its recovery partition out
+      # of that build's full package on the maker's server. One built on a
+      # third-party recovery (the Samsung phones, on OrangeFox) takes the
+      # whole recovery image from the `base-images` release of this
+      # repository, each named `<codename>-fox-recovery.img`.
+      - name: Which recovery the device's is made on
+        id: base
+        env:
+          DEVICE: ${{ matrix.device }}
+        run: |
+          if grep -q '^\[stock\]' "devices/$DEVICE.toml"; then
+            echo "kind=stock" >> "$GITHUB_OUTPUT"
+          else
+            echo "kind=fox" >> "$GITHUB_OUTPUT"
+          fi
       - name: Read the stock build the recovery is made on
+        if: steps.base.outputs.kind == 'stock'
         id: stock
         run: tools/skyward-pack stock --config "devices/${{ matrix.device }}.toml" >> "$GITHUB_OUTPUT"
       - name: Restore the stock recovery
+        if: steps.base.outputs.kind == 'stock'
         id: cache
         uses: actions/cache@v6
         with:
@@ -132,24 +149,58 @@ jobs:
       # Only what the recovery partition takes is read of the package,
       # which is several gigabytes in all.
       - name: Take the recovery partition out of the stock package
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.base.outputs.kind == 'stock' && steps.cache.outputs.cache-hit != 'true'
         run: tools/skyward-pack stock --config "devices/${{ matrix.device }}.toml" --out stock/recovery.img
       - name: Check the stock recovery
+        if: steps.base.outputs.kind == 'stock'
         env:
           RECOVERY: ${{ steps.stock.outputs.recovery }}
         run: echo "$RECOVERY  stock/recovery.img" | sha256sum --check
+      # The base image is the whole recovery partition, AVB footer and all,
+      # exactly what the phone holds there.
+      - name: Take the base recovery image
+        if: steps.base.outputs.kind == 'fox'
+        env:
+          DEVICE: ${{ matrix.device }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p stock
+          gh release download base-images --repo "$GITHUB_REPOSITORY" \
+            --pattern "$DEVICE-fox-recovery.img" --output stock/recovery.img --clobber
+      # A phone whose kernel or vendor leaves pieces out carries them in a zip
+      # in the same release, its entries laid out as they go into the ramdisk.
+      - name: Take the phone's extra files
+        if: steps.base.outputs.kind == 'fox'
+        env:
+          DEVICE: ${{ matrix.device }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p extras
+          gh release download base-images --repo "$GITHUB_REPOSITORY" \
+            --pattern "$DEVICE-files.zip" --output "$DEVICE-files.zip" --clobber || true
+          if [ -f "$DEVICE-files.zip" ]; then
+            unzip -q "$DEVICE-files.zip" -d extras
+          fi
       - name: Pack the recovery
         id: pack
         env:
           DEVICE: ${{ matrix.device }}
-          STOCK: ${{ steps.stock.outputs.version }}
+          STOCK: ${{ steps.stock.outputs.version || 'base' }}
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; else version="${GITHUB_SHA::7}"; fi
           name="skyward-$version-$DEVICE-$STOCK"
+          # A base image smaller than the recovery partition is padded out to
+          # the size the phone's device configuration names.
+          size=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb")).get("device", {}).get("recovery_size", ""))' "devices/$DEVICE.toml")
+          args=()
+          if [ -n "$size" ]; then args+=(--partition-size "$size"); fi
+          while IFS= read -r -d '' file; do
+            args+=(--add-file "$file=${file#extras/}")
+          done < <(find extras -type f -print0)
           mkdir out
           tools/skyward-pack recovery --stock stock/recovery.img --binary tools/skyward --system-init tools/system-init \
             --config "devices/$DEVICE.toml" --font resources/fonts/MiSansVF.ttf --mono resources/fonts/KirkMono-Regular.ttf \
-            --mono-license resources/fonts/KirkMono-OFL.txt --out "out/$name.img"
+            --mono-license resources/fonts/KirkMono-OFL.txt --third-party --no-mtp "${args[@]}" --out "out/$name.img"
           echo "name=$name" >> "$GITHUB_OUTPUT"
       # The image is the whole partition, flashed as it is, and most of it
       # is the room the recovery leaves empty; it is handed out zipped.
