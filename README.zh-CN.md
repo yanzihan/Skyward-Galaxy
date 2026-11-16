@@ -85,10 +85,10 @@ Skyward 是使用 Rust 编写的 recovery，从零开始编写。
 
 ## 支持的机型
 
-| 机型 | 代号 | 构建所用的系统版本 |
+| 机型 | 代号 | 构建所用的基底 |
 | --- | --- | --- |
 | Galaxy S21 Ultra 5G | `p3q` | 原厂 Android 11 vendor 上的 OrangeFox recovery |
-| Galaxy S20+ 5G | `y2q` | 原厂 vendor 上的 OrangeFox recovery |
+| Galaxy S20+ 5G | `y2q` | 原厂 Android 11 vendor 上的 OrangeFox recovery |
 
 两台都是 A-only 三星手机：分区不带 `_a/_b` 后缀，recovery 构建在 OrangeFox 的 recovery 镜像上，因为三星原厂 recovery 在这两台机器上起不来。基底镜像发布在本仓库的 `base-images` release，文件名分别是 `<代号>-fox-recovery.img`。S21 Ultra 的镜像还需要它的 recovery 内核没有内建的模块、固件和 vendor 接口库，这些放在同一个 release 的 `p3q-files.zip` 里，目录结构就是它们在 ramdisk 里的位置；S20+ 不需要。
 

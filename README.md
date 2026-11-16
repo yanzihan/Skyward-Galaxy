@@ -94,7 +94,7 @@ from the Install page.
 | Device | Codename | Built on |
 | --- | --- | --- |
 | Galaxy S21 Ultra 5G | `p3q` | OrangeFox recovery for the phone's stock Android 11 vendor |
-| Galaxy S20+ 5G | `y2q` | OrangeFox recovery for the phone's stock vendor |
+| Galaxy S20+ 5G | `y2q` | OrangeFox recovery for the phone's stock Android 11 vendor |
 
 Both are A-only Samsung phones: no partition carries a slot suffix, and the
 recovery is built on an OrangeFox recovery image, because a Samsung stock recovery
