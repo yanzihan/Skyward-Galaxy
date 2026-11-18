@@ -468,7 +468,11 @@ fn release_loops_on(mount_point: &Path) -> Result<bool> {
         let backing_file = entry.path().join("loop/backing_file");
         let Ok(backing) = fs::read_to_string(&backing_file) else { continue };
         let backing = backing.trim();
-        if backing.is_empty() || !Path::new(backing).starts_with(mount_point) {
+        // A recovery's init makes these loops in its own mount namespace,
+        // where the installed system is /system rather than /mnt/system; a
+        // backing path that does not exist here is one of those as well.
+        let ours = Path::new(backing).starts_with(mount_point) || backing.starts_with("/system") || !Path::new(backing).exists();
+        if backing.is_empty() || !ours {
             continue;
         }
         let device = Path::new("/dev/block").join(&name);
@@ -504,14 +508,8 @@ fn release_loops_on(mount_point: &Path) -> Result<bool> {
                 busy = true;
             }
         }
-        if busy {
-            continue;
-        }
         // A loop the kernel would not clear itself keeps holding the file.
-        let autoclear = entry.path().join("loop/autoclear");
-        if fs::read_to_string(autoclear).is_ok_and(|v| v.trim() == "0")
-            && let Ok(file) = fs::File::open(&device)
-        {
+        if let Ok(file) = fs::File::open(&device) {
             let _ = unsafe { libc::ioctl(std::os::fd::AsRawFd::as_raw_fd(&file), LOOP_CLR_FD as _, 0) };
         }
         // A program still running from the loop's filesystem keeps the
