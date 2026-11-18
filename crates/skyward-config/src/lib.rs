@@ -311,6 +311,11 @@ pub struct Device {
     /// is not the whole partition the phone holds it in.
     #[serde(default)]
     pub recovery_size: Option<u64>,
+    /// Files the packer leaves out of the ramdisk, named as the ramdisk holds
+    /// them: a third-party recovery's own program and theme are replaced by
+    /// Skyward, and the partition may have no room for what only they used.
+    #[serde(default)]
+    pub drop: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

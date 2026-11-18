@@ -180,6 +180,20 @@ impl Ramdisk {
         }
     }
 
+    /// Take a regular file out of the ramdisk: a third-party recovery's
+    /// ramdisk carries files for its own program, which the image replaces,
+    /// and the partition may have no room for them beside the recovery.
+    pub fn remove(&mut self, name: &str) -> Result<()> {
+        match self.entries.iter().position(|e| e.name == name) {
+            Some(i) if self.entries[i].mode & S_IFMT == S_IFREG => {
+                self.entries.remove(i);
+                Ok(())
+            }
+            Some(_) => bail!("{name} is not a regular file"),
+            None => bail!("{name} is not in the ramdisk"),
+        }
+    }
+
     /// Add a root-owned regular file, creating missing parent directories.
     pub fn add(&mut self, name: &str, mode: u32, data: Vec<u8>) -> Result<()> {
         self.insert(name, S_IFREG | mode, data)
@@ -420,6 +434,18 @@ mod tests {
         assert_eq!((bin.mode, bin.data.as_slice()), (S_IFREG | 0o750, b"binary".as_slice()));
         assert_eq!(back.find("dev/console").unwrap().rdev, (5, 1));
         assert!(rd.add("system/bin/recovery", 0o644, Vec::new()).is_err());
+    }
+
+    #[test]
+    fn a_removed_file_is_gone_and_a_missing_one_is_an_error() {
+        let mut rd = Ramdisk { entries: Vec::new() };
+        rd.add("twres/fonts/wqy-microhei.ttf", 0o644, b"font".to_vec()).unwrap();
+        rd.add("system/bin/recovery", 0o750, b"binary".to_vec()).unwrap();
+        rd.remove("twres/fonts/wqy-microhei.ttf").unwrap();
+        let names: Vec<&str> = rd.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["twres", "twres/fonts", "system", "system/bin", "system/bin/recovery"]);
+        assert!(rd.remove("twres/fonts/wqy-microhei.ttf").is_err());
+        assert!(rd.remove("twres").is_err(), "a folder is not a regular file");
     }
 
     /// What the reference `lz4` tool unpacks `packed` to.

@@ -9,6 +9,10 @@ soc = { hans = "骁龙®888移动平台", hant = "Snapdragon® 888 行動平台"
 # 三星原厂是 OneUI 的版本号、Flyme 是 "Flyme x.y"、Lineage 是 lineage 的构建号,
 # 换 ROM 时自动跟着变,不要钉死某个厂商私有的属性。
 os_version_prop = "ro.build.display.id"
+# 打包时从 Fox 基底 ramdisk 里去掉的文件:这套主题字体只给 TWRP 自己的界面用,
+# Skyward 不跑 TWRP 界面;p3q 的 recovery 分区只有 78MB,要放下未修改的全量
+# MiSans 字体,就得让这些用不上的文件腾出位置。
+drop = ["twres/fonts/wqy-microhei.ttf"]
 
 [display]
 width = 1440
