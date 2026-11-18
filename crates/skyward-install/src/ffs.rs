@@ -352,9 +352,12 @@ impl Shared {
     }
 
     /// The function went away before the control thread heard of it: give
-    /// it a moment to.
+    /// it a moment to. The bulk endpoints have no poll of their own, so a
+    /// wait here is a short sleep rather than the kernel waking us; keep it
+    /// short enough that a block request's answer is not held back, which
+    /// at the old 10ms cost about 5MB/s.
     fn settle(&self) {
-        let _ = self.changed.wait_timeout(self.lock(), Duration::from_millis(10));
+        let _ = self.changed.wait_timeout(self.lock(), Duration::from_micros(100));
     }
 }
 
