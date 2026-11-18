@@ -1,18 +1,16 @@
 use anyhow::{bail, ensure, Context, Result};
-use procfs::process::{FDTarget, MMapPath, Process};
 use skyward_config::Service;
 use skyward_programs::script::{Socket, SocketKind};
 use skyward_programs::secure::Started;
 use skyward_sys::ueventd;
-use skyward_vab::Mounted;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -424,61 +422,6 @@ fn command(s: &Service, who: &Credentials, given: &Given, handed: &[(String, Own
         })
     };
     cmd
-}
-
-/// Lock in memory every file the running programs have mapped or open on
-/// the `mounted` partitions, so they keep working once those partitions
-/// are written over, and give the mount points the files are on. The
-/// locked mappings stay for the rest of the recovery's life.
-pub fn pin(services: &[Service], mounted: &[Mounted]) -> Result<Vec<PathBuf>> {
-    let mut files = BTreeSet::new();
-    // A program run once has ended, and one between restarts has nothing in
-    // memory to keep either.
-    for s in services.iter().filter(|s| !s.oneshot) {
-        let Some(pid) = running(&s.path) else { continue };
-        let process = Process::new(pid as i32).with_context(|| format!("open process {pid}"))?;
-        for map in process.maps().with_context(|| format!("read the mappings of {}", s.path))? {
-            if let MMapPath::Path(p) = map.pathname {
-                files.insert(p);
-            }
-        }
-        for fd in process.fd().with_context(|| format!("read the files {} has open", s.path))? {
-            if let FDTarget::Path(p) = fd.with_context(|| format!("read a file {} has open", s.path))?.target {
-                files.insert(p);
-            }
-        }
-    }
-    let mut busy: Vec<PathBuf> = Vec::new();
-    for file in files {
-        let Some(m) = mounted.iter().find(|m| file.starts_with(&m.mount_point)) else { continue };
-        if !fs::metadata(&file).with_context(|| format!("stat {}", file.display()))?.is_file() {
-            continue;
-        }
-        lock(&file)?;
-        let _ = skyward_sys::kmsg(&format!("kept {} in memory", file.display()));
-        if !busy.contains(&m.mount_point) {
-            busy.push(m.mount_point.clone());
-        }
-    }
-    Ok(busy)
-}
-
-/// Map `path` whole and lock the mapping: its pages then stay in memory
-/// for every process that maps the file.
-fn lock(path: &Path) -> Result<()> {
-    let file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let len = file.metadata().with_context(|| format!("stat {}", path.display()))?.len() as usize;
-    if len == 0 {
-        return Ok(());
-    }
-    let at = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_SHARED, file.as_raw_fd(), 0) };
-    if at == libc::MAP_FAILED {
-        return Err(io::Error::last_os_error()).with_context(|| format!("map {}", path.display()));
-    }
-    if unsafe { libc::mlock(at, len) } != 0 {
-        return Err(io::Error::last_os_error()).with_context(|| format!("lock {} in memory", path.display()));
-    }
-    Ok(())
 }
 
 /// Whether a service has registered. The service directory may itself be

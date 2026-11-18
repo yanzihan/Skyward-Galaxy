@@ -9,7 +9,6 @@ use crate::partwork;
 use crate::pty;
 use crate::readings::{Reading, Readings};
 use crate::secure;
-use crate::services;
 use crate::settings;
 use crate::systems;
 use crate::updates;
