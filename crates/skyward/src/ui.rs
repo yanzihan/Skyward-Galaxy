@@ -985,16 +985,18 @@ fn set_slot(slot: skyward_vab::Slot) -> Result<skyward_vab::BootSlots, String> {
 }
 
 /// What has to happen before an update writes over the installed system's
-/// partitions: the files the phone's own programs run from stay in memory,
-/// and the booted slot's partitions come off.
+/// partitions: the booted slot's partitions come off, and whatever runs
+/// from them is stopped. Pinning the programs' files in memory, as the
+/// services page does, keeps those files open in this process and with
+/// them the partitions' device-mapper devices busy, so the updater cannot
+/// remove them.
 fn detach(services: Vec<Service>) -> Detach {
     Box::new(move || {
+        let _ = services;
         // A phone without slots has one set of partitions, named without a
         // suffix; A is only the name this code gives it.
         let slot = skyward_vab::current_slot()?.unwrap_or(skyward_vab::Slot::A);
-        let mounted = skyward_vab::mounted_partitions(slot)?;
-        let busy = services::pin(&services, &mounted)?;
-        skyward_vab::release_partitions(slot, &busy)
+        skyward_vab::release_partitions(slot, &[])
     })
 }
 
