@@ -989,7 +989,9 @@ fn set_slot(slot: skyward_vab::Slot) -> Result<skyward_vab::BootSlots, String> {
 /// and the booted slot's partitions come off.
 fn detach(services: Vec<Service>) -> Detach {
     Box::new(move || {
-        let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+        // A phone without slots has one set of partitions, named without a
+        // suffix; A is only the name this code gives it.
+        let slot = skyward_vab::current_slot()?.unwrap_or(skyward_vab::Slot::A);
         let mounted = skyward_vab::mounted_partitions(slot)?;
         let busy = services::pin(&services, &mounted)?;
         skyward_vab::release_partitions(slot, &busy)

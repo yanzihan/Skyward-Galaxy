@@ -415,7 +415,11 @@ pub fn mounted_partitions(slot: Slot) -> Result<Vec<Mounted>> {
 /// stays mounted for the update.
 pub fn release_partitions(slot: Slot, busy: &[PathBuf]) -> Result<()> {
     for m in mounted_partitions(slot)?.into_iter().rev() {
-        if busy.contains(&m.mount_point) {
+        // A recovery that starts a library from the installed system's
+        // APEX mounts a loop device backed by a file on the partition,
+        // which holds the partition busy until the loop goes.
+        let loop_busy = release_loops_on(&m.mount_point)?;
+        if busy.contains(&m.mount_point) || loop_busy {
             mount::umount_detach_over(&m.mount_point)?;
         } else {
             mount::umount_over(&m.mount_point)?;
@@ -423,6 +427,61 @@ pub fn release_partitions(slot: Slot, busy: &[PathBuf]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Unmount the loop mounts whose backing file lies on `mount_point`, and
+/// let their loop devices go: they hold the partition they are backed by
+/// busy. A loop whose mount still has a program's linker mapped cannot go
+/// yet; that mount is detached and the partition follows, and the loop
+/// leaves when the program does. Whether that happened.
+fn release_loops_on(mount_point: &Path) -> Result<bool> {
+    /// From linux/loop.h: clear the loop's backing file.
+    const LOOP_CLR_FD: libc::c_ulong = 0x4c01;
+    let mut detached = false;
+    let mut busy = false;
+    for entry in fs::read_dir("/sys/block").context("read /sys/block")? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("loop") {
+            continue;
+        }
+        let backing_file = entry.path().join("loop/backing_file");
+        let Ok(backing) = fs::read_to_string(&backing_file) else { continue };
+        let backing = backing.trim();
+        if backing.is_empty() || !Path::new(backing).starts_with(mount_point) {
+            continue;
+        }
+        let device = Path::new("/dev/block").join(&name);
+        let Ok(device_number) = devnum(&device) else { continue };
+        for point in mount::points_of(device_number).with_context(|| format!("find what {name} is mounted at"))? {
+            match mount::umount(&point) {
+                Ok(()) => {}
+                Err(e) if e.root_cause().downcast_ref::<std::io::Error>().is_some_and(|e| e.raw_os_error() == Some(libc::EBUSY)) => {
+                    mount::umount_detach(&point)
+                        .with_context(|| format!("detach {} (holds {backing}, and a program runs from it)", point.display()))?;
+                    detached = true;
+                }
+                Err(e) => return Err(e).with_context(|| format!("unmount {} (holds {backing})", point.display())),
+            }
+        }
+        if detached {
+            busy = true;
+            continue;
+        }
+        // A loop the kernel would not clear itself keeps holding the file.
+        let autoclear = entry.path().join("loop/autoclear");
+        if fs::read_to_string(autoclear).is_ok_and(|v| v.trim() == "0")
+            && let Ok(file) = fs::File::open(&device)
+        {
+            let _ = unsafe { libc::ioctl(std::os::fd::AsRawFd::as_raw_fd(&file), LOOP_CLR_FD as _, 0) };
+        }
+        // A program still running from the loop's filesystem keeps the
+        // loop, and so the file on the partition, in use.
+        if Path::new("/sys/block").join(&name).exists() {
+            busy = true;
+        }
+    }
+    Ok(busy)
 }
 
 /// Undo `mount_partitions`: unmount the slot's partitions where their own
