@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// A network joined before, kept to join again on a later start.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Wifi {
+    /// The network's name, as its beacon carries it.
+    pub ssid: Vec<u8>,
+    pub security: Security,
+    /// The password, as it was typed.
+    pub password: String,
+}
+
 /// Choices the pages show and the user changes, and where installing
 /// stands.
 #[derive(Clone, Debug, PartialEq)]
@@ -158,6 +168,8 @@ pub struct State {
     /// The WLAN, as the runtime last told it; none on a phone whose WLAN the
     /// recovery does not bring up.
     pub wlan: Option<Wlan>,
+    /// The networks joined before, with what joins them again.
+    pub wifi: Vec<Wifi>,
     /// The network the password page is for, and what is typed there.
     pub joining: Option<Network>,
     /// The network the details page is of, as it was found.
@@ -246,6 +258,7 @@ impl Default for State {
             part_work: None,
             update: Standing::None,
             wlan: None,
+            wifi: Vec::new(),
             joining: None,
             details: None,
             adding: None,

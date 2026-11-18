@@ -1164,6 +1164,8 @@ struct Pages<'a> {
     servers: Servers,
     /// The WLAN, on a phone whose driver the recovery brings up.
     wlan: Option<wlan::Worker>,
+    /// The WLAN stood on when the recovery last ran, to bring it up again.
+    wlan_on: bool,
     scanned_at: Instant,
     /// Asking GitHub for Skyward's newest release, and updating to it.
     skyward_checker: Option<updates::Worker>,
@@ -1240,6 +1242,9 @@ impl<'a> Pages<'a> {
         // system named with the work it asks for, or the one the installed
         // system is built to start in, or else the one they last spoke.
         let kept = settings::read()?;
+        // The WLAN stood on when the recovery last ran: it is brought up
+        // again with no touch, once the worker that brings it up is made.
+        let wlan_on = kept.settings().is_some_and(|s| s.wlan.on);
         let locale = request.locale.as_deref().or(cfg.device.lang.as_deref()).or(info.locale.as_deref());
         let named = locale.map(Lang::for_locale).transpose()?;
         app.take_settings(kept.settings(), named);
@@ -1379,6 +1384,7 @@ impl<'a> Pages<'a> {
             switched: false,
             servers: Arc::new(Mutex::new(Vec::new())),
             wlan: None,
+            wlan_on,
             scanned_at: Instant::now(),
             skyward_checker: None,
             skyward_updater: None,
@@ -1497,13 +1503,21 @@ impl<'a> Pages<'a> {
         // The WLAN starts off. Without the bundle of the vendor interface's
         // libraries the supplicant does not start, and the WLAN page says why.
         if let Some(w) = &cfg.wlan {
-            self.app.state.wlan = Some(Wlan::default());
+            let mut shown = Wlan::default();
+            if self.wlan_on {
+                shown.power = WlanPower::Starting;
+            }
+            self.app.state.wlan = Some(shown);
             let modules = cfg.modules.sources.iter().map(|s| skyward_modules::source_dir(s)).collect::<Result<Vec<_>>>()?;
             let libraries = secure::libraries().unwrap_or_else(|e| {
                 let _ = skyward_sys::kmsg(&format!("the vendor interface's libraries are not open: {e:#}"));
                 None
             });
-            self.wlan = Some(wlan::Worker::start(w.clone(), modules, libraries, self.servers.clone())?);
+            let saved = self.app.state.wifi.clone();
+            self.wlan = Some(wlan::Worker::start(w.clone(), modules, libraries, self.servers.clone(), saved)?);
+            if self.wlan_on {
+                wlan_worker(&self.wlan)?.send(wlan::Command::On);
+            }
         }
         self.scanned_at = Instant::now();
         self.drive_at = Instant::now();
@@ -2541,6 +2555,9 @@ impl Pages<'_> {
                 wlan_worker(&self.wlan)?.send(wlan::Command::Scan);
             }
             Effect::JoinWlan { ssid, name, security, password } => {
+                // A network about to be joined is kept, so a later start
+                // joins it again with its password.
+                self.app.remember_wifi(ssid.clone(), security, password.0.clone());
                 wlan_worker(&self.wlan)?.send(wlan::Command::Join { ssid, name, security, password: password.0 })
             }
             Effect::LeaveWlan => wlan_worker(&self.wlan)?.send(wlan::Command::Leave),

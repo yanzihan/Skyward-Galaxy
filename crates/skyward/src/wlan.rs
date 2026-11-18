@@ -12,6 +12,7 @@ use skyward_net::reach::{self, Reach};
 use skyward_net::supplicant::{self, Bss, Control, Event as Told, Security};
 use skyward_net::wlan::{self, Joined, Link, Next, Power, Stage, Traffic, Wlan};
 use skyward_sys::worker::{self, Teller};
+use skyward_ui::app::Wifi;
 use std::fs;
 use std::net::Ipv4Addr;
 use std::os::fd::RawFd;
@@ -100,13 +101,14 @@ pub struct Worker {
 impl Worker {
     /// Start the thread, with the WLAN off. `modules` are the folders the
     /// driver's modules are found in, `libraries` the bundle of the vendor
-    /// interface's libraries, and `servers` where the DNS servers the
-    /// network gives are kept for whoever looks names up.
-    pub fn start(cfg: Config, modules: Vec<PathBuf>, libraries: Option<PathBuf>, servers: Servers) -> Result<Worker> {
+    /// interface's libraries, `servers` where the DNS servers the network
+    /// gives are kept for whoever looks names up, and `saved` the networks
+    /// joined before, which are joined again when the WLAN comes up.
+    pub fn start(cfg: Config, modules: Vec<PathBuf>, libraries: Option<PathBuf>, servers: Servers, saved: Vec<Wifi>) -> Result<Worker> {
         let (inbox, asked) = worker::telling().context("make the WLAN thread's inbox")?;
         let back = inbox.clone();
         let worker = worker::Worker::start("wlan", move |tell| {
-            let mut s = Station { cfg, modules, libraries, servers, state: Wlan::default(), running: None, back, tell };
+            let mut s = Station { cfg, modules, libraries, servers, saved, state: Wlan::default(), running: None, back, tell };
             s.run(&asked);
         })?;
         Ok(Worker { inbox, worker })
@@ -198,6 +200,8 @@ struct Station {
     modules: Vec<PathBuf>,
     libraries: Option<PathBuf>,
     servers: Servers,
+    /// The networks joined before, joined again when the WLAN comes up.
+    saved: Vec<Wifi>,
     state: Wlan,
     running: Option<Running>,
     /// What a thread asking for an address, or looking how far the
@@ -288,6 +292,7 @@ impl Station {
             Ok(r) => {
                 self.running = Some(r);
                 self.state.power = Power::On;
+                self.join_saved();
                 self.command(Command::Scan);
             }
             Err(e) => {
@@ -350,16 +355,42 @@ impl Station {
         self.state.power = Power::Failed(format!("{e:#}"));
     }
 
+    /// Add the networks joined before, the first of them shown as the one
+    /// being joined: the supplicant then joins one on its own, and the
+    /// address is asked for as for one joined by hand.
+    fn join_saved(&mut self) {
+        if self.saved.is_empty() {
+            return;
+        }
+        let Some(r) = &self.running else { return };
+        let mut shown = false;
+        for saved in &self.saved {
+            let joined = Joined {
+                ssid: saved.ssid.clone(),
+                name: String::from_utf8_lossy(&saved.ssid).into_owned(),
+                security: saved.security,
+                stage: Stage::Joining,
+            };
+            match add_network(&r.control, &joined, &saved.password, true) {
+                Ok(_) if !shown => {
+                    self.state.joined = Some(joined);
+                    shown = true;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    let _ = skyward_sys::kmsg(&format!("the saved network {} is not added: {e:#}", joined.name));
+                }
+            }
+        }
+    }
+
     fn join(&self, joined: &Joined, password: &str) -> Result<()> {
         let r = self.running.as_ref().context("the WLAN is off")?;
         r.control.order("REMOVE_NETWORK all")?;
-        let id: u32 = r.control.ask("ADD_NETWORK")?.trim().parse().context("wpa_supplicant numbered the network with no number")?;
         // One the last scan did not see may hide its name, as one added by
         // hand may.
         let hidden = !r.found.iter().any(|b| b.ssid == joined.ssid);
-        for c in supplicant::network_commands(id, &joined.ssid, joined.security, password, hidden)? {
-            r.control.order(&c)?;
-        }
+        let id = add_network(&r.control, joined, password, hidden)?;
         r.control.order(&format!("SELECT_NETWORK {id}"))
     }
 
@@ -664,6 +695,15 @@ fn place(file: &Firmware) -> Result<()> {
         }
     };
     fs::write(&to, bytes).with_context(|| format!("write {}", to.display()))
+}
+
+/// Add `joined` to the supplicant's networks, telling the number it took.
+fn add_network(control: &Control, joined: &Joined, password: &str, hidden: bool) -> Result<u32> {
+    let id: u32 = control.ask("ADD_NETWORK")?.trim().parse().context("wpa_supplicant numbered the network with no number")?;
+    for c in supplicant::network_commands(id, &joined.ssid, joined.security, password, hidden)? {
+        control.order(&c)?;
+    }
+    Ok(id)
 }
 
 /// Start the supplicant on the interface, and wait for its control socket.

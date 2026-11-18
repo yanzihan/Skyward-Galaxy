@@ -9,6 +9,7 @@ use skyward_block::mount;
 use skyward_ui::settings::{Kept, Settings};
 use std::fs::{self, File};
 use std::io::{ErrorKind, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 const METADATA: &str = "/metadata";
@@ -32,7 +33,7 @@ pub fn read() -> Result<Kept> {
 fn read_file() -> Result<Kept> {
     match fs::read_to_string(FILE) {
         Ok(text) => match Settings::read(&text) {
-            Ok(settings) => Ok(Kept::Settings(settings)),
+            Ok(settings) => Ok(Kept::Settings(Box::new(settings))),
             Err(e) => {
                 skyward_sys::kmsg(&format!("{FILE} does not read as settings, and is written afresh: {e:#}"))?;
                 Ok(Kept::Nothing)
@@ -57,7 +58,15 @@ pub fn write(settings: &Settings) -> Result<()> {
 
 fn write_file(settings: &Settings) -> Result<()> {
     fs::create_dir_all(FOLDER).with_context(|| format!("make {FOLDER}"))?;
-    let mut file = File::create(WRITING).with_context(|| format!("make {WRITING}"))?;
+    // The WLAN's passwords are in the file: only the recovery reads it.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(WRITING)
+        .with_context(|| format!("make {WRITING}"))?;
+    file.set_permissions(fs::Permissions::from_mode(0o600)).with_context(|| format!("keep {WRITING} to the recovery"))?;
     file.write_all(settings.text().as_bytes()).with_context(|| format!("write {WRITING}"))?;
     file.sync_all().with_context(|| format!("write {WRITING}"))?;
     fs::rename(WRITING, FILE).with_context(|| format!("move {WRITING} over {FILE}"))?;

@@ -57,11 +57,25 @@ impl App {
             return;
         }
         self.state.wlan = Some(w);
+        // A network joined with the wrong password is not kept to be tried
+        // again on a later start.
+        if let Some(joined) = &self.state.wlan.as_ref().and_then(|w| w.joined.as_ref())
+            && joined.stage == Joining::WrongPassword
+        {
+            self.state.wifi.retain(|saved| saved.ssid != joined.ssid);
+        }
         if matches!(self.screen(), Screen::Home | Screen::Wlan | Screen::WlanNetwork | Screen::Update | Screen::SkywardUpdate) {
             self.refresh();
         }
         // The status bar shows the network joined over every page.
         self.dirty = true;
+    }
+
+    /// Keep the network being joined, with what joins it again on a later
+    /// start: one of the same name gives way to what is typed now.
+    pub fn remember_wifi(&mut self, ssid: Vec<u8>, security: Security, password: String) {
+        self.state.wifi.retain(|w| w.ssid != ssid);
+        self.state.wifi.push(Wifi { ssid, security, password });
     }
 
     /// How fast data went over the network joined in the last second, which

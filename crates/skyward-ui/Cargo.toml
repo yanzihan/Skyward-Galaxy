@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+hex = { workspace = true }
 ab_glyph = "0.2.32"
 # The stock status bar's outlines are filled as glyphs are.
 ab_glyph_rasterizer = "0.1.10"

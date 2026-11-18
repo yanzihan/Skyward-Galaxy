@@ -5,10 +5,12 @@
 //! a time zone, a part or a place by its name, so a later version that lists
 //! them otherwise reads them the same.
 
-use crate::app::{Place, State, SCREEN_OFF, TIME_ZONES};
+use crate::app::{Place, State, Wifi, SCREEN_OFF, TIME_ZONES};
 use crate::Lang;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use skyward_net::supplicant::Security;
+use skyward_net::wlan::Power;
 
 /// How long settings stand unchanged before they are written, so a slider
 /// dragged across the page is written once, after the hand stops.
@@ -52,6 +54,68 @@ pub struct Settings {
     pub install: Install,
     pub backup: Backup,
     pub logs: Logs,
+    /// The WLAN: whether it stood on, and the networks joined before.
+    pub wlan: Wlan,
+}
+
+/// The WLAN as the pages left it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Wlan {
+    /// The switch stood on when the recovery last ran, so a later start
+    /// brings the network up with no touch.
+    pub on: bool,
+    /// The networks joined before, with what joins them again.
+    pub networks: Vec<WlanNetwork>,
+}
+
+/// A network joined before, as the file holds it: its name in hex, so the
+/// bytes a beacon carries are kept whatever they are, how it is protected,
+/// and the password as it was typed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WlanNetwork {
+    pub ssid: String,
+    /// open, owe, wpa2, wpa3 or wpa2wpa3.
+    pub security: String,
+    pub password: String,
+}
+
+impl WlanNetwork {
+    /// The network `wifi` holds, or none for one the recovery cannot join
+    /// again.
+    pub fn of(wifi: &Wifi) -> Option<WlanNetwork> {
+        Some(WlanNetwork { ssid: hex::encode(&wifi.ssid), security: tag(wifi.security)?.to_string(), password: wifi.password.clone() })
+    }
+
+    /// The network this file entry names, or none for one this version does
+    /// not know.
+    pub fn wifi(&self) -> Option<Wifi> {
+        Some(Wifi { ssid: hex::decode(&self.ssid).ok()?, security: untag(&self.security)?, password: self.password.clone() })
+    }
+}
+
+/// How a protection is named in the file.
+fn tag(security: Security) -> Option<&'static str> {
+    match security {
+        Security::Open => Some("open"),
+        Security::Owe => Some("owe"),
+        Security::Psk => Some("wpa2"),
+        Security::Sae => Some("wpa3"),
+        Security::PskSae => Some("wpa2wpa3"),
+        Security::Wep | Security::Enterprise => None,
+    }
+}
+
+/// The protection `name` in the file names.
+fn untag(name: &str) -> Option<Security> {
+    match name {
+        "open" => Some(Security::Open),
+        "owe" => Some(Security::Owe),
+        "wpa2" => Some(Security::Psk),
+        "wpa3" => Some(Security::Sae),
+        "wpa2wpa3" => Some(Security::PskSae),
+        _ => None,
+    }
 }
 
 /// The install page's options.
@@ -138,6 +202,12 @@ impl Settings {
                 verify: state.verify,
             },
             logs: Logs { kinds: names(&state.logs, &LOGS), to: LOG_PLACES[state.logs_to].to_string() },
+            wlan: Wlan {
+                // A WLAN that failed to come up still stood on: the next
+                // start tries again.
+                on: state.wlan.as_ref().is_some_and(|w| !matches!(w.power, Power::Off)),
+                networks: state.wifi.iter().filter_map(WlanNetwork::of).collect(),
+            },
         }
     }
 
@@ -198,6 +268,7 @@ impl Settings {
         if let Some(at) = LOG_PLACES.iter().position(|place| *place == self.logs.to) {
             state.logs_to = at;
         }
+        state.wifi = self.wlan.networks.iter().filter_map(WlanNetwork::wifi).collect();
     }
 }
 
@@ -214,7 +285,7 @@ fn picked<const N: usize>(kept: &[String], all: &[&str; N]) -> [bool; N] {
 /// What the settings file held as the recovery started.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kept {
-    Settings(Settings),
+    Settings(Box<Settings>),
     /// No settings: no file, or one that does not read as settings.
     Nothing,
     /// Where the file is could not be read; it is left alone this time.
@@ -246,7 +317,7 @@ pub struct Keeper {
 impl Keeper {
     pub fn new(kept: &Kept) -> Keeper {
         let holds = match kept {
-            Kept::Settings(settings) => Some(Some(settings.clone())),
+            Kept::Settings(settings) => Some(Some(settings.as_ref().clone())),
             Kept::Nothing => Some(None),
             Kept::Unreadable => None,
         };
@@ -326,6 +397,23 @@ mod tests {
     }
 
     #[test]
+    fn the_wlan_and_the_networks_joined_are_kept() {
+        use crate::app::Wifi;
+        use skyward_net::wlan::Wlan as Shown;
+        let mut state = State {
+            wifi: vec![Wifi { ssid: b"Skyward".to_vec(), security: Security::Psk, password: "12345678".into() }],
+            ..State::default()
+        };
+        state.wlan = Some(Shown { power: Power::On, ..Shown::default() });
+        let kept = Settings::read(&Settings::of(&state).text()).unwrap();
+        assert!(kept.wlan.on, "the switch stood on");
+        assert_eq!(kept.wlan.networks, [WlanNetwork { ssid: "536b7977617264".into(), security: "wpa2".into(), password: "12345678".into() }]);
+        let mut back = State::default();
+        kept.apply(&mut back);
+        assert_eq!(back.wifi, state.wifi, "the network is joined again on the next start");
+    }
+
+    #[test]
     fn each_value_is_kept_as_what_it_means() {
         let state = State { screen_off: 3, time_zone: 1, backup: [true, false, false, true], ..State::default() };
         let text = Settings::of(&state).text();
@@ -375,7 +463,7 @@ mod tests {
 
     #[test]
     fn changed_settings_are_written_once_they_have_stood_for_a_moment() {
-        let mut keeper = Keeper::new(&Kept::Settings(Settings::default()));
+        let mut keeper = Keeper::new(&Kept::Settings(Box::default()));
         assert_eq!(keeper.due(Settings::default(), 0), None, "what the file holds is not written again");
         let dark = Settings { dark: true, ..Settings::default() };
         assert_eq!(keeper.due(dark.clone(), 1_000), None);
