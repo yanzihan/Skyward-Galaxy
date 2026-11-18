@@ -839,7 +839,9 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
             Ok(other) => bail!("a script waiting to be agreed to was told {other:?}"),
         }
     }
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+    // A phone without slots has one boot set; A is only the name this
+    // code gives it, and the partition names carry no suffix.
+    let slot = skyward_vab::current_slot()?.unwrap_or(skyward_vab::Slot::A);
     extract_script()?;
     shell_at_sbin()?;
     let kept = hold(ctx, slot)?;
