@@ -20,14 +20,13 @@ CFG=$C/devices/$CODE.toml
 WORK=$C/work/$CODE
 mkdir -p "$WORK"
 
-# 输出名 Skyward-Galaxy-<代号>_<月-日>.后缀;同一天编多个加 -01、-02
+# 输出名 Skyward-Galaxy_0.3.1_beta2-<代号>.后缀;再编加 _01、_02
 mkdir -p "$C/target"
-STAMP=$(date +%m-%d)
-BASE="Skyward-Galaxy-${CODE}_${STAMP}"
+BASE="Skyward-Galaxy_0.3.1_beta2-${CODE}"
 N=0
 while :; do
   TAG=''
-  [ "$N" -gt 0 ] && TAG=$(printf -- '-%02d' "$N")
+  [ "$N" -gt 0 ] && TAG=$(printf -- '_%02d' "$N")
   if [ ! -e "$C/target/$BASE$TAG.img" ] && [ ! -e "$C/target/$BASE$TAG.tar.md5" ]; then
     break
   fi

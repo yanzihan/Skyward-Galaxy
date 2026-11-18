@@ -7,14 +7,13 @@ AVB=/home/yanzihan/android/fox_16.0/external/avb/avbtool.py
 KEYS=$C/work/avb-keys
 PART=82694144   # BOARD_RECOVERYIMAGE_PARTITION_SIZE
 
-# 输出名 Skyward-Galaxy-y2q_<月-日>.后缀;同一天编多个加 -01、-02
+# 输出名 Skyward-Galaxy_0.3.1_beta2-y2q.后缀;再编加 _01、_02
 mkdir -p "$C/target"
-STAMP=$(date +%m-%d)
-BASE="Skyward-Galaxy-y2q_${STAMP}"
+BASE="Skyward-Galaxy_0.3.1_beta2-y2q"
 N=0
 while :; do
   TAG=''
-  [ "$N" -gt 0 ] && TAG=$(printf -- '-%02d' "$N")
+  [ "$N" -gt 0 ] && TAG=$(printf -- '_%02d' "$N")
   if [ ! -e "$C/target/$BASE$TAG.img" ] && [ ! -e "$C/target/$BASE$TAG.tar.md5" ]; then
     break
   fi
