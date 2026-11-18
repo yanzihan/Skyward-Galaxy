@@ -892,16 +892,15 @@ fn verify_signature(ctx: &Context, size: u64) -> Result<Verdict> {
 
 /// Put the zip's install script where it runs from, for anyone to run.
 fn extract_script() -> Result<()> {
-    let zip = File::open(fuse::PACKAGE).context("open the package")?;
-    let mut zip = zip::ZipArchive::new(BufReader::new(zip)).context("read the zip directory")?;
-    let mut script = zip.by_name(package::UPDATE_BINARY).context("open the install script")?;
+    let mut zip = File::open(fuse::PACKAGE).context("open the package")?;
+    let script = package::read_entry(&mut zip, package::UPDATE_BINARY)?.context("open the install script")?;
     match fs::remove_file(BINARY) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {}
         Err(e) => return Err(e).with_context(|| format!("take away the {BINARY} an earlier install left")),
     }
     let mut out = OpenOptions::new().write(true).create_new(true).open(BINARY).with_context(|| format!("make {BINARY}"))?;
-    io::copy(&mut script, &mut out).with_context(|| format!("write {BINARY}"))?;
+    io::copy(&mut &script[..], &mut out).with_context(|| format!("write {BINARY}"))?;
     out.set_permissions(fs::Permissions::from_mode(0o755)).with_context(|| format!("make {BINARY} runnable"))
 }
 

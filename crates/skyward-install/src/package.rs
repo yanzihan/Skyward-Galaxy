@@ -86,6 +86,16 @@ pub fn identify<R: Read + Seek>(mut file: R) -> Result<Package> {
         return Ok(image::detect(&mut file, &head)?.map_or(Package::Unknown, Package::Image));
     }
     file.seek(SeekFrom::Start(0)).context("rewind the package")?;
+    // A large ZIP64 ROM makes the zip crate scan the whole archive for
+    // its end record. A script is all this recovery needs from such a
+    // package, and its directory is a few KB we can read ourselves.
+    if let Some(cd) = central_directory(&mut file)? {
+        let has = |name: &str| cd.windows(name.len()).any(|w| w == name.as_bytes());
+        if has(UPDATE_BINARY) && !has(PAYLOAD) {
+            return Ok(Package::Script);
+        }
+    }
+    file.seek(SeekFrom::Start(0)).context("rewind the package")?;
     let mut zip = ZipArchive::new(file).context("read the zip directory")?;
     if zip.index_for_name(PAYLOAD).is_some() {
         return update(&mut zip).map(Package::Update);
@@ -97,6 +107,157 @@ pub fn identify<R: Read + Seek>(mut file: R) -> Result<Package> {
         return Ok(Package::Script);
     }
     Ok(Package::Unknown)
+}
+
+/// The zip's central directory, found through its end record. Reads a few
+/// KB, not the archive: the zip crate scans a large ZIP64 archive from its
+/// end looking for a record it accepts. `None` when this is not a zip
+/// whose directory can be read this way.
+fn central_directory<R: Read + Seek>(file: &mut R) -> Result<Option<Vec<u8>>> {
+    const EOCD: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
+    const LOCATOR: [u8; 4] = [0x50, 0x4b, 0x06, 0x07];
+    const RECORD: [u8; 4] = [0x50, 0x4b, 0x06, 0x06];
+    let size = file.seek(SeekFrom::End(0)).context("find the package's size")?;
+    if size < 22 {
+        return Ok(None);
+    }
+    let tail_len = size.min(128 * 1024) as usize;
+    file.seek(SeekFrom::Start(size - tail_len as u64)).context("seek to the package's end")?;
+    let mut tail = vec![0u8; tail_len];
+    file.read_exact(&mut tail).context("read the package's end")?;
+    let mut found = None;
+    for i in (0..=tail_len - 22).rev() {
+        if tail[i..i + 4] == EOCD {
+            let comment = u16::from_le_bytes([tail[i + 20], tail[i + 21]]) as u64;
+            if size - tail_len as u64 + i as u64 + 22 + comment == size {
+                found = Some(i);
+                break;
+            }
+        }
+    }
+    let Some(i) = found else { return Ok(None) };
+    let mut cd_size = u64::from(u32::from_le_bytes(tail[i + 12..i + 16].try_into().expect("four bytes")));
+    let mut cd_off = u64::from(u32::from_le_bytes(tail[i + 16..i + 20].try_into().expect("four bytes")));
+    if cd_off == u64::from(u32::MAX) || cd_size == u64::from(u32::MAX) {
+        let Some(loc) = i.checked_sub(20) else { return Ok(None) };
+        if tail[loc..loc + 4] != LOCATOR {
+            return Ok(None);
+        }
+        let record = u64::from_le_bytes(tail[loc + 8..loc + 16].try_into().expect("eight bytes"));
+        if record.checked_add(56).is_none_or(|end| end > size) {
+            return Ok(None);
+        }
+        let mut rec = [0u8; 56];
+        file.seek(SeekFrom::Start(record)).context("seek to the zip64 end record")?;
+        file.read_exact(&mut rec).context("read the zip64 end record")?;
+        if rec[..4] != RECORD {
+            return Ok(None);
+        }
+        cd_size = u64::from_le_bytes(rec[40..48].try_into().expect("eight bytes"));
+        cd_off = u64::from_le_bytes(rec[48..56].try_into().expect("eight bytes"));
+    }
+    let len = cd_size.min(4 << 20) as usize;
+    if cd_off.checked_add(len as u64).is_none_or(|end| end > size) {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(cd_off)).context("seek to the zip's directory")?;
+    let mut cd = vec![0u8; len];
+    file.read_exact(&mut cd).context("read the zip's directory")?;
+    Ok(Some(cd))
+}
+
+/// One central directory entry: how its data is packed, how long it is,
+/// and where its local header is.
+struct Entry {
+    method: u16,
+    compressed: u64,
+    local_offset: u64,
+}
+
+/// The directory entry named `name`, if there is one.
+fn entry(cd: &[u8], name: &[u8]) -> Option<Entry> {
+    const HEADER: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
+    let mut at = 0usize;
+    while at.checked_add(46)? <= cd.len() {
+        if cd[at..at + 4] != HEADER {
+            return None;
+        }
+        let method = u16::from_le_bytes(cd[at + 10..at + 12].try_into().ok()?);
+        let compressed32 = u32::from_le_bytes(cd[at + 20..at + 24].try_into().ok()?);
+        let uncompressed32 = u32::from_le_bytes(cd[at + 24..at + 28].try_into().ok()?);
+        let name_len = u16::from_le_bytes(cd[at + 28..at + 30].try_into().ok()?) as usize;
+        let extra_len = u16::from_le_bytes(cd[at + 30..at + 32].try_into().ok()?) as usize;
+        let comment_len = u16::from_le_bytes(cd[at + 32..at + 34].try_into().ok()?) as usize;
+        let local32 = u32::from_le_bytes(cd[at + 42..at + 46].try_into().ok()?);
+        let name_at = at + 46;
+        let extra_at = name_at.checked_add(name_len)?;
+        let extra_end = extra_at.checked_add(extra_len)?;
+        if extra_end > cd.len() {
+            return None;
+        }
+        if &cd[name_at..extra_at] == name {
+            let mut compressed = u64::from(compressed32);
+            let mut local = u64::from(local32);
+            let mut p = extra_at;
+            while p + 4 <= extra_end {
+                let id = u16::from_le_bytes(cd[p..p + 2].try_into().ok()?);
+                let size = u16::from_le_bytes(cd[p + 2..p + 4].try_into().ok()?) as usize;
+                p += 4;
+                if p + size > extra_end {
+                    break;
+                }
+                if id == 0x0001 {
+                    let mut q = p;
+                    if uncompressed32 == u32::MAX {
+                        q += 8;
+                    }
+                    if compressed32 == u32::MAX && q + 8 <= p + size {
+                        compressed = u64::from_le_bytes(cd[q..q + 8].try_into().ok()?);
+                        q += 8;
+                    }
+                    if local32 == u32::MAX && q + 8 <= p + size {
+                        local = u64::from_le_bytes(cd[q..q + 8].try_into().ok()?);
+                    }
+                }
+                p += size;
+            }
+            return Some(Entry { method, compressed, local_offset: local });
+        }
+        at = extra_end + comment_len;
+    }
+    None
+}
+
+/// Read `name` out of the zip, stored or deflated, from its directory
+/// entry. A large ZIP64 archive need not be scanned for its end record to
+/// read one small file out of it.
+pub fn read_entry<R: Read + Seek>(file: &mut R, name: &str) -> Result<Option<Vec<u8>>> {
+    let Some(cd) = central_directory(file)? else { return Ok(None) };
+    let Some(e) = entry(&cd, name.as_bytes()) else { return Ok(None) };
+    file.seek(SeekFrom::Start(e.local_offset)).context("seek to the entry's local header")?;
+    let mut head = [0u8; 30];
+    file.read_exact(&mut head).context("read the entry's local header")?;
+    if head[..4] != [0x50, 0x4b, 0x03, 0x04] {
+        bail!("{name}: not a local file header");
+    }
+    let name_len = u64::from(u16::from_le_bytes([head[26], head[27]]));
+    let extra_len = u64::from(u16::from_le_bytes([head[28], head[29]]));
+    let at = e.local_offset + 30 + name_len + extra_len;
+    let len = usize::try_from(e.compressed).context("the entry is too long to read")?;
+    file.seek(SeekFrom::Start(at)).context("seek to the entry's data")?;
+    let mut data = vec![0u8; len];
+    file.read_exact(&mut data).context("read the entry's data")?;
+    match e.method {
+        0 => Ok(Some(data)),
+        8 => {
+            let mut out = Vec::new();
+            flate2::read::DeflateDecoder::new(&data[..])
+                .read_to_end(&mut out)
+                .with_context(|| format!("inflate {name}"))?;
+            Ok(Some(out))
+        }
+        method => bail!("{name} is compressed with method {method}"),
+    }
 }
 
 fn update<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Update> {
@@ -308,6 +469,32 @@ METADATA_SIZE=1024
         assert_eq!(u.payload_size, payload.len() as u64);
         assert_eq!(u.properties, PROPERTIES_TEXT);
         assert_eq!(u.version(), Some("G9980ZHSGHZB1"));
+    }
+
+    #[test]
+    fn an_install_script_is_read_out_of_the_directory_without_the_zip_reader() {
+        let script = b"#!/system/bin/sh\necho hello\n";
+        for method in [CompressionMethod::Stored, CompressionMethod::Deflated] {
+            let zip = zip_with(&[
+                (UPDATE_BINARY, script, method),
+                ("blob.bin", b"payload", CompressionMethod::Stored),
+            ]);
+            assert_eq!(identify(Cursor::new(zip.clone())).unwrap(), Package::Script);
+            let read = read_entry(&mut Cursor::new(zip), UPDATE_BINARY).unwrap().unwrap();
+            assert_eq!(read, script);
+        }
+    }
+
+    #[test]
+    fn a_zip64_directory_entry_is_read_without_scanning_the_archive() {
+        let script = b"#!/system/bin/sh\n";
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated).large_file(true);
+        w.start_file(UPDATE_BINARY, options).unwrap();
+        w.write_all(script).unwrap();
+        let zip = w.finish().unwrap().into_inner();
+        assert_eq!(identify(Cursor::new(zip.clone())).unwrap(), Package::Script);
+        assert_eq!(read_entry(&mut Cursor::new(zip), UPDATE_BINARY).unwrap().unwrap(), script);
     }
 
     #[test]
