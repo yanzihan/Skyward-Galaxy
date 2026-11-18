@@ -216,9 +216,11 @@ mod client {
         now.subsec_nanos() ^ (now.as_secs() as u32).rotate_left(13) ^ std::process::id()
     }
 
-    /// Send `question` to `to` and wait for an answer to transaction `xid`,
-    /// sending it again as long as none comes; give up after the last wait.
-    fn exchange(s: &UdpSocket, to: SocketAddrV4, question: &[u8], xid: u32, mac: [u8; 6], stop: &AtomicBool) -> Result<Option<Reply>> {
+    /// Send `question` to `to` and wait for an answer to transaction `xid`
+    /// that `wanted` takes, sending it again as long as none comes; give up
+    /// after the last wait. A server may send an offer again after the
+    /// request, or send it twice, and an offer is no answer to a request.
+    fn exchange(s: &UdpSocket, to: SocketAddrV4, question: &[u8], xid: u32, mac: [u8; 6], stop: &AtomicBool, wanted: fn(&Reply) -> bool) -> Result<Option<Reply>> {
         let mut buf = [0u8; 1500];
         for wait in WAITS {
             s.send_to(question, to).context("send a DHCP question")?;
@@ -229,7 +231,9 @@ mod client {
                 }
                 match s.recv(&mut buf) {
                     Ok(n) => {
-                        if let Some(r) = reply(&buf[..n], xid, mac) {
+                        if let Some(r) = reply(&buf[..n], xid, mac)
+                            && wanted(&r)
+                        {
                             return Ok(Some(r));
                         }
                     }
@@ -253,12 +257,12 @@ mod client {
         let mut refused: Option<String> = None;
         for _ in 0..3 {
             let id = xid();
-            let (address, server, relay) = match exchange(&s, broadcast(), &discover(id, mac)?, id, mac, stop)? {
+            let (address, server, relay) = match exchange(&s, broadcast(), &discover(id, mac)?, id, mac, stop, |r| matches!(r, Reply::Offer { .. }))? {
                 Some(Reply::Offer { address, server, relay }) => (address, server, relay),
                 Some(_) => continue,
                 None => bail!("no DHCP server offered an address"),
             };
-            let taken = exchange(&s, broadcast(), &request(id, mac, address, server, relay.as_ref())?, id, mac, stop)?;
+            let taken = exchange(&s, broadcast(), &request(id, mac, address, server, relay.as_ref())?, id, mac, stop, |r| matches!(r, Reply::Ack(_) | Reply::Nak { .. }))?;
             match taken {
                 Some(Reply::Ack(lease)) => return Ok(lease),
                 Some(Reply::Nak { server: from, message }) => {
@@ -292,7 +296,7 @@ mod client {
         let s = socket(interface)?;
         let id = xid();
         let to = if anyone { broadcast() } else { SocketAddrV4::new(lease.server, SERVER_PORT) };
-        Ok(match exchange(&s, to, &extend(id, mac, lease.address)?, id, mac, stop)? {
+        Ok(match exchange(&s, to, &extend(id, mac, lease.address)?, id, mac, stop, |r| matches!(r, Reply::Ack(_) | Reply::Nak { .. }))? {
             Some(Reply::Ack(kept)) => Kept::Kept(kept),
             Some(_) => Kept::Refused,
             None => Kept::Unanswered,
