@@ -283,7 +283,13 @@ fn write(path: &Path, codename: &str, tell: &dyn Fn(Event)) -> End {
     let ready = || -> Result<(Vec<u8>, Vec<Slot>)> {
         let image = upgrade::unzip(path)?;
         upgrade::check(&image, codename)?;
-        let next = skyward_vab::boot::next_slot().context("ask which slot starts next")?;
+        // A phone with slots writes the one that starts next, so the build it
+        // runs stays where it is. One without slots has the single recovery
+        // partition, the one it runs from; A is the name this code gives it.
+        let next = match skyward_vab::current_slot()? {
+            Some(_) => skyward_vab::boot::next_slot().context("ask which slot starts next")?,
+            None => Slot::A,
+        };
         Ok((image, upgrade::slots(dir, next)?))
     };
     let (image, slots) = match ready() {

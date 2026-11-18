@@ -1294,12 +1294,14 @@ impl<'a> Pages<'a> {
         };
         app.state.phone_logs = cfg.wipe.logs.len();
         // Skyward lives in a recovery partition of each slot where the phone
-        // has them, and the install page then offers to keep it there. Such a
-        // phone holds a second system where it also has boot and init_boot
-        // partitions in both slots, which a switch writes.
+        // has them, and the install page then offers to keep it there. A phone
+        // without slots has the one partition, named without a suffix, which
+        // Skyward's own update writes as well. A phone with slots holds a
+        // second system where it also has boot and init_boot partitions in
+        // both slots, which a switch writes.
         let by_name = Path::new(skyward_block::BY_NAME);
         let both = |base: &str| -> Result<bool> { Ok(by_name.join(format!("{base}_a")).try_exists()? && by_name.join(format!("{base}_b")).try_exists()?) };
-        app.state.recovery_partitions = both("recovery")?;
+        app.state.recovery_partitions = by_name.join("recovery").try_exists()? || both("recovery")?;
         app.state.dual_boot = app.state.recovery_partitions && both("boot")? && both("init_boot")?;
         // The second system's work; the systems are read at once, for the home
         // page to name the one that starts, once a switch cut off before is
