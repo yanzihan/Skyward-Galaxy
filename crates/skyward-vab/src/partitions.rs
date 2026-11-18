@@ -409,21 +409,41 @@ pub fn mounted_partitions(slot: Slot) -> Result<Vec<Mounted>> {
 }
 
 /// Take the slot's mounted partitions away before an update writes over
-/// them: unmount them and remove their device-mapper devices. A partition
-/// whose mount point is in `busy` still has files in use; it only leaves
-/// the tree, and those files and its device stay until let go. /metadata
-/// stays mounted for the update.
+/// them: unmount them and remove their device-mapper devices. Anything
+/// still running from a partition (the recovery's key services keep files
+/// there) is stopped first, so the partition is really gone rather than
+/// left mapped under a detached mount. /metadata stays mounted for the
+/// update.
 pub fn release_partitions(slot: Slot, busy: &[PathBuf]) -> Result<()> {
+    let _ = busy;
     for m in mounted_partitions(slot)?.into_iter().rev() {
+        stop_users(&m.mount_point);
         // A recovery that starts a library from the installed system's
         // APEX mounts a loop device backed by a file on the partition,
         // which holds the partition busy until the loop goes.
         let loop_busy = release_loops_on(&m.mount_point)?;
-        if busy.contains(&m.mount_point) || loop_busy {
+        if loop_busy {
             mount::umount_detach_over(&m.mount_point)?;
-        } else {
-            mount::umount_over(&m.mount_point)?;
+            continue;
+        }
+        let mut unmounted = false;
+        for _ in 0..20 {
+            match mount::umount_over(&m.mount_point) {
+                Ok(()) => {
+                    unmounted = true;
+                    break;
+                }
+                Err(e) if is_busy(&e) => {
+                    stop_users(&m.mount_point);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if unmounted {
             snapshots::unmap_snapshot(&m.partition)?;
+        } else {
+            mount::umount_detach_over(&m.mount_point)?;
         }
     }
     Ok(())
@@ -432,12 +452,12 @@ pub fn release_partitions(slot: Slot, busy: &[PathBuf]) -> Result<()> {
 /// Unmount the loop mounts whose backing file lies on `mount_point`, and
 /// let their loop devices go: they hold the partition they are backed by
 /// busy. A loop whose mount still has a program's linker mapped cannot go
-/// yet; that mount is detached and the partition follows, and the loop
-/// leaves when the program does. Whether that happened.
+/// until that program does; such programs are stopped first, so the
+/// partition can come off cleanly instead of the updater writing over a
+/// live device-mapper mapping. Whether anything had to be left detached.
 fn release_loops_on(mount_point: &Path) -> Result<bool> {
     /// From linux/loop.h: clear the loop's backing file.
     const LOOP_CLR_FD: libc::c_ulong = 0x4c01;
-    let mut detached = false;
     let mut busy = false;
     for entry in fs::read_dir("/sys/block").context("read /sys/block")? {
         let entry = entry?;
@@ -454,18 +474,37 @@ fn release_loops_on(mount_point: &Path) -> Result<bool> {
         let device = Path::new("/dev/block").join(&name);
         let Ok(device_number) = devnum(&device) else { continue };
         for point in mount::points_of(device_number).with_context(|| format!("find what {name} is mounted at"))? {
-            match mount::umount(&point) {
-                Ok(()) => {}
-                Err(e) if e.root_cause().downcast_ref::<std::io::Error>().is_some_and(|e| e.raw_os_error() == Some(libc::EBUSY)) => {
-                    mount::umount_detach(&point)
-                        .with_context(|| format!("detach {} (holds {backing}, and a program runs from it)", point.display()))?;
-                    detached = true;
+            if mount::umount(&point).is_ok() {
+                continue;
+            }
+            // Programs still run from the loop's filesystem: the recovery's
+            // services map the installed system's linker from its APEX.
+            // Stop them, then unmount again, so the loop and the partition's
+            // device-mapper device can go before the updater rewrites it.
+            stop_users(&point);
+            let mut gone = false;
+            for _ in 0..20 {
+                match mount::umount(&point) {
+                    Ok(()) => {
+                        gone = true;
+                        break;
+                    }
+                    Err(e) if is_busy(&e) => {
+                        stop_users(&point);
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(e) => return Err(e).with_context(|| format!("unmount {} (holds {backing})", point.display())),
                 }
-                Err(e) => return Err(e).with_context(|| format!("unmount {} (holds {backing})", point.display())),
+            }
+            if !gone {
+                // Some program could not be stopped; leave the mount out of
+                // the tree and the partition mapped, as before.
+                mount::umount_detach(&point)
+                    .with_context(|| format!("detach {} (holds {backing}, and a program runs from it)", point.display()))?;
+                busy = true;
             }
         }
-        if detached {
-            busy = true;
+        if busy {
             continue;
         }
         // A loop the kernel would not clear itself keeps holding the file.
@@ -482,6 +521,41 @@ fn release_loops_on(mount_point: &Path) -> Result<bool> {
         }
     }
     Ok(busy)
+}
+
+/// Whether an unmount failed because something still uses the mount.
+fn is_busy(e: &anyhow::Error) -> bool {
+    e.root_cause().downcast_ref::<std::io::Error>().is_some_and(|e| e.raw_os_error() == Some(libc::EBUSY))
+}
+
+/// Stop every process that has a file mapped or open from `mount_point`,
+/// except init and this process. A recovery's services run the installed
+/// system's linker from its APEX and keep files from its partitions open;
+/// they have to go before those can be unmounted and the partition written.
+fn stop_users(mount_point: &Path) {
+    let prefix = format!("{}/", mount_point.display());
+    let me = std::process::id();
+    let Ok(entries) = fs::read_dir("/proc") else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
+        if pid == 1 || pid == me {
+            continue;
+        }
+        let proc = entry.path();
+        let mapped = fs::read_to_string(proc.join("maps")).is_ok_and(|maps| {
+            maps.lines().any(|line| line.split_whitespace().last().is_some_and(|path| path.starts_with(&prefix)))
+        });
+        let opened = !mapped
+            && fs::read_dir(proc.join("fd")).is_ok_and(|fds| {
+                fds.flatten().any(|fd| {
+                    fs::read_link(fd.path()).is_ok_and(|target| target.to_string_lossy().starts_with(&prefix))
+                })
+            });
+        if mapped || opened {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        }
+    }
 }
 
 /// Undo `mount_partitions`: unmount the slot's partitions where their own
