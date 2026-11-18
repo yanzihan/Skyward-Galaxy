@@ -20,9 +20,10 @@ CFG=$C/devices/$CODE.toml
 WORK=$C/work/$CODE
 mkdir -p "$WORK"
 
-# 输出名 Skyward-Galaxy_0.3.1_beta2-<代号>.后缀;再编加 _01、_02
+# 输出名 Skyward-Galaxy_<Cargo.toml 里的版本>-<代号>.后缀;再编加 _01、_02
 mkdir -p "$C/target"
-BASE="Skyward-Galaxy_0.3.1_beta2-${CODE}"
+VER=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$C/Cargo.toml" | head -1)
+BASE="Skyward-Galaxy_${VER}-${CODE}"
 N=0
 while :; do
   TAG=''
