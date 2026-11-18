@@ -2711,7 +2711,15 @@ fn skyward_online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
     };
     let y = widgets::list(c, t, f, y, &[Row::new(&title).icon(GREEN, Icon::Install).subtitle(&detail).trail(Trail::None)]).bottom;
     if !newest.newer || newest.build.is_none() {
-        return y;
+        // An answer stands until it is asked for again: GitHub may have a
+        // newer release since, and the page offers the asking.
+        let mut row = Row::new(l.pick(CHECK_FOR_UPDATES));
+        if !s.online() {
+            row = row.subtitle(l.pick(WLAN_FIRST));
+        }
+        let check = widgets::list(c, t, f, y + gap, &[row]);
+        out.extend(hits(&check.rows, &[Action::CheckSkyward]));
+        return check.bottom;
     }
     match &s.skyward_job {
         Some(job) if job.outcome.is_none() => {
