@@ -1,6 +1,7 @@
 //! DHCPv4: asking the network for an address, and keeping it.
 
 use anyhow::{Context, Result};
+use dhcproto::v4::relay::RelayAgentInformation;
 use dhcproto::v4::{DhcpOption, Flags, Message, MessageType, Opcode, OptionCode};
 use dhcproto::{Decodable, Encodable};
 use std::net::Ipv4Addr;
@@ -25,11 +26,12 @@ pub struct Lease {
 /// What a server answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
-    /// `server` offers `address`.
-    Offer { address: Ipv4Addr, server: Ipv4Addr },
+    /// `server` offers `address`, through the relay whose own information
+    /// option a request has to give back.
+    Offer { address: Ipv4Addr, server: Ipv4Addr, relay: Option<RelayAgentInformation> },
     Ack(Lease),
-    /// The address asked for is not to be had.
-    Nak,
+    /// The address asked for is not to be had, and why.
+    Nak { server: Ipv4Addr, message: Option<String> },
 }
 
 /// What every question asks to be told besides the address.
@@ -68,11 +70,15 @@ pub fn discover(xid: u32, mac: [u8; 6]) -> Result<Vec<u8>> {
     bytes(&question(xid, mac, MessageType::Discover, true, Ipv4Addr::UNSPECIFIED))
 }
 
-/// Take the address `server` offered.
-pub fn request(xid: u32, mac: [u8; 6], address: Ipv4Addr, server: Ipv4Addr) -> Result<Vec<u8>> {
+/// Take the address `server` offered, giving back the information a relay
+/// put in the offer: a server behind one refuses a request without it.
+pub fn request(xid: u32, mac: [u8; 6], address: Ipv4Addr, server: Ipv4Addr, relay: Option<&RelayAgentInformation>) -> Result<Vec<u8>> {
     let mut m = question(xid, mac, MessageType::Request, true, Ipv4Addr::UNSPECIFIED);
     m.opts_mut().insert(DhcpOption::RequestedIpAddress(address));
     m.opts_mut().insert(DhcpOption::ServerIdentifier(server));
+    if let Some(relay) = relay {
+        m.opts_mut().insert(DhcpOption::RelayAgentInformation(relay.clone()));
+    }
     bytes(&m)
 }
 
@@ -95,9 +101,19 @@ pub fn reply(packet: &[u8], xid: u32, mac: [u8; 6]) -> Option<Reply> {
         Some(DhcpOption::ServerIdentifier(at)) => *at,
         _ => m.siaddr(),
     };
+    let relay = match opts.get(OptionCode::RelayAgentInformation) {
+        Some(DhcpOption::RelayAgentInformation(info)) => Some(info.clone()),
+        _ => None,
+    };
     match opts.msg_type()? {
-        MessageType::Offer => Some(Reply::Offer { address: m.yiaddr(), server }),
-        MessageType::Nak => Some(Reply::Nak),
+        MessageType::Offer => Some(Reply::Offer { address: m.yiaddr(), server, relay }),
+        MessageType::Nak => {
+            let message = match opts.get(OptionCode::Message) {
+                Some(DhcpOption::Message(m)) => Some(m.clone()),
+                _ => None,
+            };
+            Some(Reply::Nak { server, message })
+        }
         MessageType::Ack => {
             let seconds = match opts.get(OptionCode::AddressLeaseTime) {
                 Some(DhcpOption::AddressLeaseTime(s)) if *s > 0 => *s,
@@ -234,20 +250,31 @@ mod client {
     /// again from the start.
     pub fn obtain(interface: &str, mac: [u8; 6], stop: &AtomicBool) -> Result<Lease> {
         let s = socket(interface)?;
+        let mut refused: Option<String> = None;
         for _ in 0..3 {
             let id = xid();
-            let (address, server) = match exchange(&s, broadcast(), &discover(id, mac)?, id, mac, stop)? {
-                Some(Reply::Offer { address, server }) => (address, server),
+            let (address, server, relay) = match exchange(&s, broadcast(), &discover(id, mac)?, id, mac, stop)? {
+                Some(Reply::Offer { address, server, relay }) => (address, server, relay),
                 Some(_) => continue,
                 None => bail!("no DHCP server offered an address"),
             };
-            match exchange(&s, broadcast(), &request(id, mac, address, server)?, id, mac, stop)? {
+            let taken = exchange(&s, broadcast(), &request(id, mac, address, server, relay.as_ref())?, id, mac, stop)?;
+            match taken {
                 Some(Reply::Ack(lease)) => return Ok(lease),
-                Some(_) => continue,
+                Some(Reply::Nak { server: from, message }) => {
+                    refused = Some(match message {
+                        Some(why) => format!("{from} refused {address}: {why}"),
+                        None => format!("{from} refused {address}"),
+                    });
+                }
+                Some(_) => {}
                 None => bail!("the DHCP server at {server} did not give the address it offered"),
             }
         }
-        bail!("the DHCP server kept taking back the address it offered")
+        match refused {
+            Some(why) => bail!("the DHCP server kept taking back the address it offered ({why})"),
+            None => bail!("the DHCP server kept taking back the address it offered"),
+        }
     }
 
     /// How asking to keep a lease went.
@@ -298,7 +325,7 @@ mod tests {
         assert_eq!((asked.opcode(), asked.xid(), &asked.chaddr()[..6]), (Opcode::BootRequest, 7, &MAC[..]));
         assert!(asked.flags().broadcast(), "answers come broadcast before the interface has an address");
         assert_eq!(asked.opts().msg_type(), Some(MessageType::Discover));
-        let taken = Message::from_bytes(&request(7, MAC, Ipv4Addr::new(192, 168, 1, 23), Ipv4Addr::new(192, 168, 1, 1)).unwrap()).unwrap();
+        let taken = Message::from_bytes(&request(7, MAC, Ipv4Addr::new(192, 168, 1, 23), Ipv4Addr::new(192, 168, 1, 1), None).unwrap()).unwrap();
         assert_eq!(taken.opts().get(OptionCode::RequestedIpAddress), Some(&DhcpOption::RequestedIpAddress(Ipv4Addr::new(192, 168, 1, 23))));
         assert_eq!(taken.opts().get(OptionCode::ServerIdentifier), Some(&DhcpOption::ServerIdentifier(Ipv4Addr::new(192, 168, 1, 1))));
         let kept = Message::from_bytes(&extend(8, MAC, Ipv4Addr::new(192, 168, 1, 23)).unwrap()).unwrap();
@@ -310,7 +337,7 @@ mod tests {
     #[test]
     fn an_answer_gives_the_lease_and_what_came_with_it() {
         let offer = answer(MessageType::Offer, 7, MAC, &[]);
-        assert_eq!(reply(&offer, 7, MAC), Some(Reply::Offer { address: Ipv4Addr::new(192, 168, 1, 23), server: Ipv4Addr::new(192, 168, 1, 1) }));
+        assert_eq!(reply(&offer, 7, MAC), Some(Reply::Offer { address: Ipv4Addr::new(192, 168, 1, 23), server: Ipv4Addr::new(192, 168, 1, 1), relay: None }));
         let ack = answer(MessageType::Ack, 7, MAC, &[
             DhcpOption::SubnetMask(Ipv4Addr::new(255, 255, 255, 0)),
             DhcpOption::Router(vec![Ipv4Addr::new(192, 168, 1, 1)]),
@@ -334,7 +361,27 @@ mod tests {
         let none = answer(MessageType::Ack, 7, MAC, &[DhcpOption::AddressLeaseTime(0)]);
         let Some(Reply::Ack(lease)) = reply(&none, 7, MAC) else { panic!() };
         assert_eq!(lease.seconds, LEASE_UNSAID, "a lease of no time is taken as one that does not say");
-        assert_eq!(reply(&answer(MessageType::Nak, 7, MAC, &[]), 7, MAC), Some(Reply::Nak));
+        assert_eq!(reply(&answer(MessageType::Nak, 7, MAC, &[]), 7, MAC), Some(Reply::Nak { server: Ipv4Addr::new(192, 168, 1, 1), message: None }));
+        let told = answer(MessageType::Nak, 7, MAC, &[DhcpOption::Message("the address is taken".into())]);
+        assert_eq!(
+            reply(&told, 7, MAC),
+            Some(Reply::Nak { server: Ipv4Addr::new(192, 168, 1, 1), message: Some("the address is taken".into()) }),
+            "a server that says why is passed on"
+        );
+    }
+
+    #[test]
+    fn a_relays_information_goes_back_in_the_request() {
+        use dhcproto::v4::relay::{RelayAgentInformation, RelayInfo};
+        let mut info = RelayAgentInformation::default();
+        info.insert(RelayInfo::LinkSelection(Ipv4Addr::new(10, 0, 0, 1)));
+        let offer = answer(MessageType::Offer, 7, MAC, &[DhcpOption::RelayAgentInformation(info.clone())]);
+        let Some(Reply::Offer { address, server, relay: Some(relay) }) = reply(&offer, 7, MAC) else {
+            panic!("the relay's information comes with the offer")
+        };
+        assert_eq!(relay, info);
+        let taken = Message::from_bytes(&request(7, MAC, address, server, Some(&relay)).unwrap()).unwrap();
+        assert_eq!(taken.opts().get(OptionCode::RelayAgentInformation), Some(&DhcpOption::RelayAgentInformation(info)), "a server behind a relay refuses a request without it");
     }
 
     #[test]
