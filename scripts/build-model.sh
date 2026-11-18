@@ -37,7 +37,7 @@ OUT="$C/target/$BASE$TAG"
 $C/target/release/skyward-pack recovery --stock "$FOX" \
   --binary $C/target/aarch64-linux-android/release/skyward \
   --system-init $C/target/system-init/aarch64-linux-android/release/system-init \
-  --config "$CFG" --font $C/work/MiSansVF-subset.ttf \
+  --config "$CFG" --font $C/resources/fonts/MiSansVF.ttf \
   --mono $C/resources/fonts/KirkMono-Regular.ttf --mono-license $C/resources/fonts/KirkMono-OFL.txt \
   --third-party --no-mtp --partition-size "$PART" \
   "${EXTRA[@]}" --out "$WORK/base.img" | tail -1

@@ -24,7 +24,7 @@ OUT="$C/target/$BASE$TAG"
 $C/target/release/skyward-pack recovery --stock $C/work/y2q/recovery.img \
   --binary $C/target/aarch64-linux-android/release/skyward \
   --system-init $C/target/system-init/aarch64-linux-android/release/system-init \
-  --config $C/devices/y2q.toml --font $C/work/MiSansVF-subset.ttf \
+  --config $C/devices/y2q.toml --font $C/resources/fonts/MiSansVF.ttf \
   --mono $C/resources/fonts/KirkMono-Regular.ttf --mono-license $C/resources/fonts/KirkMono-OFL.txt \
   --third-party --no-mtp --partition-size "$PART" --out $C/work/y2q/base.img | tail -1
 
