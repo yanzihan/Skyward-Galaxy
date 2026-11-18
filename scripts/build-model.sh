@@ -62,8 +62,10 @@ mv "$WORK/raw.img" "$OUT.img"
 
 cd "$C/target"
 cp "$OUT.img" recovery.img
-tar cf "$OUT.tar" recovery.img
-md5sum -t "$OUT.tar" >> "$OUT.tar"
-mv "$OUT.tar" "$OUT.tar.md5"
+# odin4 不认 md5 行里的绝对路径:名字要和 tar 一样,只用文件名
+TAR=$(basename "$OUT.tar")
+tar cf "$TAR" recovery.img
+md5sum -t "$TAR" >> "$TAR"
+mv "$TAR" "$TAR.md5"
 rm -f recovery.img
 ls -la "$OUT.img" "$OUT.tar.md5"
