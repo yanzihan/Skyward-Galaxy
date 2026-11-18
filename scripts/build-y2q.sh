@@ -7,6 +7,21 @@ AVB=/home/yanzihan/android/fox_16.0/external/avb/avbtool.py
 KEYS=$C/work/avb-keys
 PART=82694144   # BOARD_RECOVERYIMAGE_PARTITION_SIZE
 
+# 输出名 Skyward-Galaxy-y2q_<月-日>.后缀;同一天编多个加 -01、-02
+mkdir -p "$C/target"
+STAMP=$(date +%m-%d)
+BASE="Skyward-Galaxy-y2q_${STAMP}"
+N=0
+while :; do
+  TAG=''
+  [ "$N" -gt 0 ] && TAG=$(printf -- '-%02d' "$N")
+  if [ ! -e "$C/target/$BASE$TAG.img" ] && [ ! -e "$C/target/$BASE$TAG.tar.md5" ]; then
+    break
+  fi
+  N=$((N + 1))
+done
+OUT="$C/target/$BASE$TAG"
+
 $C/target/release/skyward-pack recovery --stock $C/work/y2q/recovery.img \
   --binary $C/target/aarch64-linux-android/release/skyward \
   --system-init $C/target/system-init/aarch64-linux-android/release/system-init \
@@ -29,13 +44,12 @@ python3 "$AVB" add_hash_footer --image "$C/work/y2q/raw.img" \
   --partition_size "$PART" --partition_name recovery \
   --algorithm SHA256_RSA4096 --key "$KEYS/skyward-4096.pem" \
   --salt "$(printf '68%.0s' {1..32})" --internal_release_string skyward-pack >/dev/null
-mv "$C/work/y2q/raw.img" "$C/target/skyward-y2q.img"
+mv "$C/work/y2q/raw.img" "$OUT.img"
 
 cd "$C/target"
-cp skyward-y2q.img recovery.img
-rm -f skyward-y2q.tar skyward-y2q.tar.md5
-tar cf skyward-y2q.tar recovery.img
-md5sum -t skyward-y2q.tar >> skyward-y2q.tar
-mv skyward-y2q.tar skyward-y2q.tar.md5
+cp "$OUT.img" recovery.img
+tar cf "$OUT.tar" recovery.img
+md5sum -t "$OUT.tar" >> "$OUT.tar"
+mv "$OUT.tar" "$OUT.tar.md5"
 rm -f recovery.img
-ls -la skyward-y2q.tar.md5
+ls -la "$OUT.img" "$OUT.tar.md5"

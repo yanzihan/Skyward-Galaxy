@@ -20,6 +20,21 @@ CFG=$C/devices/$CODE.toml
 WORK=$C/work/$CODE
 mkdir -p "$WORK"
 
+# 输出名 Skyward-Galaxy-<代号>_<月-日>.后缀;同一天编多个加 -01、-02
+mkdir -p "$C/target"
+STAMP=$(date +%m-%d)
+BASE="Skyward-Galaxy-${CODE}_${STAMP}"
+N=0
+while :; do
+  TAG=''
+  [ "$N" -gt 0 ] && TAG=$(printf -- '-%02d' "$N")
+  if [ ! -e "$C/target/$BASE$TAG.img" ] && [ ! -e "$C/target/$BASE$TAG.tar.md5" ]; then
+    break
+  fi
+  N=$((N + 1))
+done
+OUT="$C/target/$BASE$TAG"
+
 $C/target/release/skyward-pack recovery --stock "$FOX" \
   --binary $C/target/aarch64-linux-android/release/skyward \
   --system-init $C/target/system-init/aarch64-linux-android/release/system-init \
@@ -43,13 +58,12 @@ python3 "$AVB" add_hash_footer --image "$WORK/raw.img" \
   --partition_size "$PART" --partition_name recovery \
   --algorithm SHA256_RSA4096 --key "$KEYS/skyward-4096.pem" \
   --salt "$(printf '6a%.0s' {1..32})" --internal_release_string skyward-pack >/dev/null
-mv "$WORK/raw.img" "$C/target/skyward-$CODE.img"
+mv "$WORK/raw.img" "$OUT.img"
 
 cd "$C/target"
-cp "skyward-$CODE.img" recovery.img
-rm -f "skyward-$CODE.tar" "skyward-$CODE.tar.md5"
-tar cf "skyward-$CODE.tar" recovery.img
-md5sum -t "skyward-$CODE.tar" >> "skyward-$CODE.tar"
-mv "skyward-$CODE.tar" "skyward-$CODE.tar.md5"
+cp "$OUT.img" recovery.img
+tar cf "$OUT.tar" recovery.img
+md5sum -t "$OUT.tar" >> "$OUT.tar"
+mv "$OUT.tar" "$OUT.tar.md5"
 rm -f recovery.img
-ls -la "skyward-$CODE.tar.md5"
+ls -la "$OUT.img" "$OUT.tar.md5"
