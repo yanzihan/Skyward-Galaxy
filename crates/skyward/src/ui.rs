@@ -2449,7 +2449,9 @@ impl Pages<'_> {
                 }
             }
             Effect::Flash { partition, pick } => {
-                let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+                // A phone without slots writes the plain partition; A is
+                // only a name for it here.
+                let slot = skyward_vab::current_slot()?.unwrap_or(skyward_vab::Slot::A);
                 self.installer.as_ref().context("no installer holds an image")?.flash(partition, pick.slots(slot));
             }
             Effect::Cancel => self.cancel_install(now)?,

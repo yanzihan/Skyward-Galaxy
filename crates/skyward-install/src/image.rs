@@ -173,13 +173,19 @@ pub fn device_config<R: Read + Seek>(file: &mut R) -> Result<Option<Vec<u8>>> {
     find(ramdisk, |name| name == skyward_config::ramdisk::CONFIG, read).context("read the ramdisk")
 }
 
-/// The partition `name` of `slot` among the links in `dir`.
+/// The path a partition has here: on a phone with slots, the slot's; on
+/// one without, the plain name the partition table gives it.
 pub fn device(dir: &Path, name: &str, slot: Slot) -> PathBuf {
+    let plain = dir.join(name);
+    if plain.exists() {
+        return plain;
+    }
     dir.join(format!("{name}{}", slot.suffix()))
 }
 
-/// The partitions `kind` fits that this phone has in both slots, among the
-/// links in `dir`, the likeliest first.
+/// The partitions `kind` fits that this phone has, among the links in
+/// `dir`, the likeliest first. A phone with slots has each in both; one
+/// without has the plain names.
 pub fn partitions(kind: ImageKind, dir: &Path) -> Result<Vec<&'static str>> {
     let mut found = Vec::new();
     for name in kind.partitions() {
@@ -418,6 +424,18 @@ mod tests {
         assert_eq!(partitions(both, dir.path()).unwrap(), ["recovery", "boot"]);
         assert_eq!(partitions(ImageKind::Vbmeta, dir.path()).unwrap(), ["vbmeta"]);
         assert!(partitions(ImageKind::Dtbo, dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_phone_without_slots_is_offered_its_plain_partitions() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["boot", "recovery"] {
+            std::fs::File::create(dir.path().join(name)).unwrap();
+        }
+        let both = ImageKind::Boot { kernel: true, ramdisk: Ramdisk::Recovery };
+        assert_eq!(partitions(both, dir.path()).unwrap(), ["recovery", "boot"]);
+        assert_eq!(device(dir.path(), "recovery", Slot::A), dir.path().join("recovery"));
+        assert_eq!(device(dir.path(), "recovery", Slot::B), dir.path().join("recovery"));
     }
 
     /// A partition of `size` bytes filled with 0xAA, so untouched bytes

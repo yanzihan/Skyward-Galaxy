@@ -348,18 +348,20 @@ mod tests {
         // The image lit the panel, so the user looks and taps past the wake
         // guard.
         tap_at(&mut app, &f, &i, Action::FlashPartition(1), 1000);
-        tap_at(&mut app, &f, &i, Action::FlashSlots(Pick::Both), 1000);
+        // A phone without slots has one place the image can go, so no
+        // slot picker shows.
+        assert!(app.frame(&f, &i).hits.iter().all(|h| !matches!(h.action, Action::FlashSlots(_))));
         let track = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::Confirm(Confirm::Flash)).unwrap().rect;
         let y = track.centre().1 - app.top().1;
         app.touch(Touch::Down(track.x + track.h / 2.0, y), &f, 1000);
         app.touch(Touch::Move(track.x + track.w, y), &f, 1000);
-        assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Flash { partition: "boot", pick: Pick::Both }]);
+        assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Flash { partition: "boot", pick: Pick::Current }]);
         assert_eq!(app.state.install, Install::Flashing { partition: "boot", stage: None });
         app.install(Event::Progress(Stage::Flashing { done: 10, total: 40 }), 1000);
         assert_eq!(app.state.install, Install::Flashing { partition: "boot", stage: Some(Stage::Flashing { done: 10, total: 40 }) });
         app.key(Key::Back, 1000);
         assert_eq!(app.screen(), Screen::Installing, "a partition being written keeps the page");
-        app.install(Event::Finished(Outcome::Flashed { partition: "boot", slots: vec![Slot::A, Slot::B] }), 1000);
+        app.install(Event::Finished(Outcome::Flashed { partition: "boot", slots: vec![Slot::A] }), 1000);
         assert!(matches!(app.state.install, Install::Finished { damage: None, .. }), "a flash that worked broke nothing");
         assert_eq!(tap_at(&mut app, &f, &i, Action::RebootTo(Target::System), 2000), vec![Effect::Reboot(Target::System)]);
         app.key(Key::Back, 2000);
