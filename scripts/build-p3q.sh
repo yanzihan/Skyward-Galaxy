@@ -19,5 +19,7 @@ bash $C/scripts/build-model.sh p3q $C/work/p3q-fox/recovery.img 81788928 \
   --add-file "$X/system/wifi-vndk/lib64/android.hardware.wifi.supplicant@1.2.so=system/wifi-vndk/lib64/android.hardware.wifi.supplicant@1.2.so" \
   --add-file "$X/system/wifi-vndk/lib64/android.hardware.wifi.supplicant@1.3.so=system/wifi-vndk/lib64/android.hardware.wifi.supplicant@1.3.so" \
   --add-file "$X/system/wifi-vndk/lib64/libssl.so=system/wifi-vndk/lib64/libssl.so" \
+  --add-file "$X/system/wifi-vndk/lib64/libcrypto.so=system/wifi-vndk/lib64/libcrypto.so" \
+  --add-file "$X/system/wifi-vndk/lib64/liblog.so=system/wifi-vndk/lib64/liblog.so" \
   --add-file $X/lib/firmware/y792_p3.bin=lib/firmware/y792_p3.bin \
   "$@"
