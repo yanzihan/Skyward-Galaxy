@@ -164,9 +164,10 @@ pub struct Plan {
 /// Find what a factory reset erases: the data partition, the cache
 /// partition where the phone has one, and /metadata. An update the system
 /// has still to finish holds it back, as Android's own recovery is held back
-/// by one it cannot finish for the system. The data partition is erased
-/// only as one the system makes afresh as it starts, unless `reformat`
-/// names the filesystem the system asked for it to be made as here.
+/// by one it cannot finish for the system. A data partition the system makes
+/// afresh as it starts is erased whole, leaving the making to the system;
+/// one it does not is made afresh here, as the phone's own recovery makes it,
+/// unless `reformat` names the filesystem the system asked for.
 pub fn factory_reset(reformat: Option<String>) -> Result<Plan, Stop> {
     let plan = (|| -> Result<Result<Plan, Refusal>> {
         if let Some(hold) = update_hold()? {
@@ -174,9 +175,18 @@ pub fn factory_reset(reformat: Option<String>) -> Result<Plan, Stop> {
         }
         let data = first(DATA)?;
         let rebuilt = data.extra("keydirectory").is_some() && data.extras.iter().any(|e| e == "formattable");
-        if !rebuilt && reformat.is_none() {
-            return Ok(Err(Refusal::NotRebuilt));
-        }
+        let reformat = match reformat {
+            Some(filesystem) => Some(filesystem),
+            // The system does not make an emptied data partition afresh as it
+            // starts, so the partition is made afresh here instead.
+            None if !rebuilt => {
+                if data.filesystem.is_empty() {
+                    return Ok(Err(Refusal::NotRebuilt));
+                }
+                Some(data.filesystem.clone())
+            }
+            None => None,
+        };
         Ok(Ok(Plan { data, cache: cache()?, metadata: first(METADATA)?, reformat }))
     })();
     match plan {
@@ -213,12 +223,11 @@ impl Plan {
     /// Erase each part, telling `tell` of each as it begins. The programs
     /// holding the data partition end and the partition is closed; then it
     /// is discarded whole, and the system makes it afresh under a new key
-    /// the next time it starts. Asked for another filesystem, every part is
-    /// made afresh as it here instead, as Android's own recovery makes them:
-    /// the data partition on the partition itself, which a system that
-    /// encrypts it whole encrypts again as it next starts. Unless
-    /// `keep_memtag_mode`, the memory tagging asked of the bootloader is
-    /// forgotten too.
+    /// the next time it starts — or, where the system does not, or a
+    /// filesystem was asked for, it is made afresh here, as Android's own
+    /// recovery makes it. The cache partition and /metadata are always made
+    /// afresh as their own filesystems. Unless `keep_memtag_mode`, the
+    /// memory tagging asked of the bootloader is forgotten too.
     pub fn carry_out(self, keep_memtag_mode: bool, tell: &mut dyn FnMut(Event)) -> Result<(), Stop> {
         tell(Event::At(Step::Data));
         // The second system's boot set, and what keeps it, go with the data
@@ -235,13 +244,12 @@ impl Plan {
             None => erase::discard(Path::new(&device)),
         }
         .map_err(failed(Step::Data))?;
-        let made_as = |entry: &Entry| self.reformat.clone().unwrap_or_else(|| entry.filesystem.clone());
         if let Some(cache) = &self.cache {
             tell(Event::At(Step::Cache));
-            remake_cache(cache, &made_as(cache)).map_err(failed(Step::Cache))?;
+            remake_cache(cache, &cache.filesystem).map_err(failed(Step::Cache))?;
         }
         tell(Event::At(Step::Metadata));
-        remake(&self.metadata, &made_as(&self.metadata)).map_err(failed(Step::Metadata))?;
+        remake(&self.metadata, &self.metadata.filesystem).map_err(failed(Step::Metadata))?;
         if !keep_memtag_mode {
             bcb::forget_memtag_mode(&bcb::misc()).map_err(failed(Step::Metadata))?;
         }
