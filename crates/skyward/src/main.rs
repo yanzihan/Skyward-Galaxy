@@ -229,6 +229,11 @@ enum Cmd {
     /// credential and changes nothing.
     #[cfg(target_os = "android")]
     Gatekeeper,
+    /// Take an AES-GCM round trip on a key generated just now, which needs
+    /// nothing but the calls the client makes, to tell those apart from what
+    /// the phone's own wrapped keys need of them.
+    #[cfg(target_os = "android")]
+    Gcm,
     /// Say what the phone's weaver says of itself, which reads no slot and
     /// changes nothing.
     #[cfg(target_os = "android")]
@@ -475,9 +480,23 @@ fn main() -> Result<()> {
             Ok(())
         }
         #[cfg(target_os = "android")]
+        Cmd::Gcm => {
+            let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
+            let vendor = skyward_binder::driver::Binder::vendor().ok();
+            let service = skyward_crypto::Service::open(&binder, vendor.as_ref(), &hardware)?;
+            match service {
+                skyward_crypto::Service::KeyMint(service) => match service.roundtrip() {
+                    Ok(()) => println!("the key service took a round trip: the calls the client makes are the ones it takes"),
+                    Err(e) => println!("the round trip came apart: {e:#}"),
+                },
+                _ => println!("the phone's key service is of the older kind, which the round trip is not a matter of"),
+            }
+            Ok(())
+        }
+        #[cfg(target_os = "android")]
         Cmd::Weaver => {
-            let binder = skyward_binder::driver::Binder::open()?;
-            let c = skyward_crypto::weaver::Weaver::open(&binder)?.config()?;
+            let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
+            let c = skyward_crypto::weaver::Weaver::open(&binder, &hardware)?.config()?;
             println!("the weaver has {} slots, keeps keys of {} bytes and values of {} bytes", c.slots, c.key_bytes, c.value_bytes);
             Ok(())
         }

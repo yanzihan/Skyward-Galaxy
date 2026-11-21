@@ -12,6 +12,7 @@ const DEVICE: &str = "android.hardware.security.keymint.IKeyMintDevice";
 const OPERATION: &str = "android.hardware.security.keymint.IKeyMintOperation";
 
 const GET_HARDWARE_INFO: u32 = 1;
+const GENERATE_KEY: u32 = 3;
 const UPGRADE_KEY: u32 = 6;
 const CONVERT_STORAGE_KEY: u32 = 13;
 const GET_KEY_CHARACTERISTICS: u32 = 14;
@@ -38,6 +39,15 @@ const KEY_REQUIRES_UPGRADE: i32 = -62;
 const PURPOSE_DECRYPT: i32 = 1;
 const BLOCK_MODE_GCM: i32 = 32;
 const PADDING_NONE: i32 = 1;
+
+/// The tags and values of what a key made for a round trip here is made of,
+/// numbered as the interface declares them.
+const TAG_ALGORITHM: i32 = 268_435_458;
+const TAG_KEY_SIZE: i32 = 805_306_371;
+const TAG_MIN_MAC_LENGTH: i32 = 805_306_376;
+const TAG_CALLER_NONCE: i32 = 1_879_048_199;
+const ALGORITHM_AES: i32 = 32;
+const PURPOSE_ENCRYPT: i32 = 0;
 
 /// What a key parameter is tagged with. The high bits say which kind of
 /// value follows, which is why the numbers look arbitrary.
@@ -213,7 +223,7 @@ impl<'a> KeyMint<'a> {
     /// something that looks like a key. A key guarded by a screen lock
     /// takes the note the secure world wrote when it was answered.
     pub fn gcm_decrypt(&self, key_blob: &[u8], app_id: &[u8], nonce: &[u8], body: &[u8], note: Option<&Token>) -> Result<Vec<u8>> {
-        let operation = match self.begin(key_blob, app_id, nonce, note) {
+        let operation = match self.begin_op(PURPOSE_DECRYPT, key_blob, app_id, nonce, note) {
             Ok(operation) => operation,
             Err(e) if status::refused_with(&e) == Some(KEY_REQUIRES_UPGRADE) => {
                 // The phone's firmware has moved on since this key was
@@ -223,7 +233,7 @@ impl<'a> KeyMint<'a> {
                 let renewed = self
                     .upgrade(key_blob, |call| Self::gcm_params(call, app_id, nonce))
                     .context("renew the key for the firmware running now")?;
-                self.begin(&renewed, app_id, nonce, note)?
+                self.begin_op(PURPOSE_DECRYPT, &renewed, app_id, nonce, note)?
             }
             Err(e) => return Err(e),
         };
@@ -242,7 +252,13 @@ impl<'a> KeyMint<'a> {
     /// named at all, so naming an empty one leaves it unable to unwrap a
     /// key that was made bound to nothing.
     fn gcm_params(call: &mut Parcel, app_id: &[u8], nonce: &[u8]) {
-        call.i32(if app_id.is_empty() { 5 } else { 6 });
+        // What the system's own key holder sends for the keys it keeps: the
+        // block mode, the padding, the length of this call's tag, what the
+        // key is bound to, and the nonce. What the key is used for travels
+        // in the call's first field and is not named again here, where the
+        // secure world refuses the feeding that follows a decryption opened
+        // with the purpose named twice.
+        call.i32(if app_id.is_empty() { 4 } else { 5 });
         parameter(call, TAG_BLOCK_MODE, Value::Enum(VALUE_BLOCK_MODE, BLOCK_MODE_GCM));
         parameter(call, TAG_PADDING, Value::Enum(VALUE_PADDING_MODE, PADDING_NONE));
         parameter(call, TAG_MAC_LENGTH, Value::Integer(128));
@@ -250,13 +266,12 @@ impl<'a> KeyMint<'a> {
             parameter(call, TAG_APPLICATION_ID, Value::Blob(app_id));
         }
         parameter(call, TAG_NONCE, Value::Blob(nonce));
-        parameter(call, TAG_PURPOSE, Value::Enum(VALUE_KEY_PURPOSE, PURPOSE_DECRYPT));
     }
 
-    /// Open a decryption with the key service and keep hold of it.
-    fn begin(&self, key_blob: &[u8], app_id: &[u8], nonce: &[u8], note: Option<&Token>) -> Result<Handle<'a>> {
+    /// Open an AES-GCM operation with the key service and keep hold of it.
+    fn begin_op(&self, purpose: i32, key_blob: &[u8], app_id: &[u8], nonce: &[u8], note: Option<&Token>) -> Result<Handle<'a>> {
         let mut call = Parcel::call(DEVICE);
-        call.i32(PURPOSE_DECRYPT);
+        call.i32(purpose);
         call.blob(key_blob);
         Self::gcm_params(&mut call, app_id, nonce);
         // A key guarded by the screen lock takes the note the secure world
@@ -333,7 +348,46 @@ impl<'a> KeyMint<'a> {
     /// unwrap, as one made under another build or bound to something not
     /// given back to it is, apart from one that merely decrypts to nothing.
     pub fn usable(&self, key_blob: &[u8], app_id: &[u8]) -> Result<()> {
-        let operation = self.begin(key_blob, app_id, &[0; NONCE_BYTES], None)?;
+        let operation = self.begin_op(PURPOSE_DECRYPT, key_blob, app_id, &[0; NONCE_BYTES], None)?;
         self.abort(&operation)
+    }
+
+    /// An AES-GCM round trip on a key generated just now: encrypt a block of
+    /// nothing secret and read it back. The phone's own wrapped keys need
+    /// things of their own; this needs nothing but the calls themselves, so
+    /// where it comes apart, the calls are what came apart.
+    pub fn roundtrip(&self) -> Result<()> {
+        let mut call = Parcel::call(DEVICE);
+        call.i32(8);
+        parameter(&mut call, TAG_PURPOSE, Value::Enum(VALUE_KEY_PURPOSE, PURPOSE_ENCRYPT));
+        parameter(&mut call, TAG_PURPOSE, Value::Enum(VALUE_KEY_PURPOSE, PURPOSE_DECRYPT));
+        parameter(&mut call, TAG_ALGORITHM, Value::Enum(1, ALGORITHM_AES));
+        parameter(&mut call, TAG_KEY_SIZE, Value::Integer(256));
+        parameter(&mut call, TAG_BLOCK_MODE, Value::Enum(VALUE_BLOCK_MODE, BLOCK_MODE_GCM));
+        parameter(&mut call, TAG_PADDING, Value::Enum(VALUE_PADDING_MODE, PADDING_NONE));
+        parameter(&mut call, TAG_MIN_MAC_LENGTH, Value::Integer(128));
+        parameter(&mut call, TAG_CALLER_NONCE, Value::Enum(10, 1));
+        // The key service of the first keymint kind takes what to draw
+        // randomness from as well, where the later ones dropped the
+        // argument; both take no key of attestation here.
+        call.none();
+        call.none();
+        let reply = self.device.transact(GENERATE_KEY, &call).context("generate a key of one's own")?;
+        let mut read = reply.read();
+        status::ok(&mut read).context("generate a key of one's own")?;
+        let blob = read.blob().context("read the key of one's own")?;
+
+        let nonce = [0x21u8; NONCE_BYTES];
+        let plain = vec![0x51u8; 64];
+        let operation = self.begin_op(PURPOSE_ENCRYPT, &blob, &[], &nonce, None).context("seal with it")?;
+        let mut sealed = self.update(&operation, &plain)?;
+        sealed.extend_from_slice(&self.finish(&operation)?);
+        anyhow::ensure!(sealed.len() == plain.len() + 16, "sealed {} bytes for {} fed in", sealed.len(), plain.len());
+
+        let operation = self.begin_op(PURPOSE_DECRYPT, &blob, &[], &nonce, None).context("open it again")?;
+        let mut out = self.update(&operation, &sealed)?;
+        out.extend_from_slice(&self.finish(&operation)?);
+        anyhow::ensure!(out == plain, "the round trip gave back other bytes than those fed in");
+        Ok(())
     }
 }
