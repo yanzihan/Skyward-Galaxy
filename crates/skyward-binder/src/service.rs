@@ -5,6 +5,7 @@
 use crate::parcel::Parcel;
 #[cfg(target_os = "android")]
 use crate::status;
+#[cfg(target_os = "android")]
 use anyhow::{Context, Result};
 
 /// The directory every program registers with and looks things up in.
@@ -41,12 +42,82 @@ fn methods_of(sdk: u32) -> Methods {
     }
 }
 
-/// The recovery's own version, which its property files give.
-const SDK: &str = "ro.build.version.sdk";
+/// The calls the directory takes: the numbers of its methods, and the mark
+/// its header carries — none for the directories of builds before the mark
+/// was introduced, whose header holds two marks only. Which of the forms a
+/// phone's directory keeps cannot be read from the recovery's own
+/// properties, which may name a build older than the directory's binary: a
+/// recovery ramdisk built long ago on top of the installed system's
+/// directories of today. So the forms are tried, and the one that answers
+/// is kept.
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Form {
+    check: u32,
+    add: u32,
+    list: u32,
+    declared: u32,
+    /// The mark the header carries, or [`crate::parcel::HEADER_NONE`].
+    header: i32,
+}
 
-fn methods() -> Result<Methods> {
-    let sdk = skyward_sys::prop(SDK).with_context(|| format!("the recovery says no {SDK}"))?;
-    Ok(methods_of(sdk.parse().with_context(|| format!("{SDK} is {sdk:?}"))?))
+#[cfg(target_os = "android")]
+impl Form {
+    fn methods(self) -> Methods {
+        Methods { check_service: self.check, add_service: self.add, list_services: self.list, is_declared: self.declared }
+    }
+
+    fn write_name(self, call: &mut Parcel, name: &str) {
+        call.string(name);
+    }
+}
+
+/// The form the directory answered, kept once a lookup has found a service
+/// or a registration has taken.
+#[cfg(target_os = "android")]
+static FORM: std::sync::OnceLock<Form> = std::sync::OnceLock::new();
+
+/// The forms the directories of the builds a phone may carry answer in,
+/// newest first. Android 16 declared the two lookups and writes the mark;
+/// builds before it numbered the calls as they are here without it.
+#[cfg(target_os = "android")]
+fn forms() -> Vec<Form> {
+    let new = Methods { check_service: 3, add_service: 5, list_services: 6, is_declared: 9 };
+    let old = Methods { check_service: 2, add_service: 3, list_services: 4, is_declared: 7 };
+    let mark = |m: Methods, header: i32| Form {
+        check: m.check_service,
+        add: m.add_service,
+        list: m.list_services,
+        declared: m.is_declared,
+        header,
+    };
+    let remembered = FORM.get().copied();
+    let mut out = Vec::new();
+    if let Some(f) = remembered {
+        out.push(f);
+    }
+    for (m, header) in [
+        (new, crate::parcel::HEADER_RECOVERY),
+        (old, crate::parcel::HEADER_NONE),
+        (new, crate::parcel::HEADER_SYSTEM),
+        (old, crate::parcel::HEADER_SYSTEM),
+        (old, crate::parcel::HEADER_RECOVERY),
+        (new, crate::parcel::HEADER_VENDOR),
+        (old, crate::parcel::HEADER_VENDOR),
+        (new, crate::parcel::HEADER_NONE),
+    ] {
+        let f = mark(m, header);
+        if !out.contains(&f) {
+            out.push(f);
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "android")]
+fn remember(form: Form) {
+    let _ = FORM.set(form);
+    crate::parcel::use_header(form.header);
 }
 
 /// Every dump priority a service can register at, and the one a service
@@ -81,17 +152,47 @@ pub fn version(service: &crate::driver::Handle, interface: &str) -> Result<i32> 
 }
 
 /// The service registered under `name`, or `None` while nothing has
-/// registered it.
+/// registered it. The forms the directory's calls take are tried in turn,
+/// and the one that answers is kept for the calls to come.
 #[cfg(target_os = "android")]
 pub fn find<'a>(binder: &'a crate::driver::Binder, name: &str) -> Result<Option<crate::driver::Handle<'a>>> {
     let directory = binder.directory()?;
-    let mut call = Parcel::call(DIRECTORY);
-    call.string(name);
-    let reply = directory.transact(methods()?.check_service, &call).with_context(|| format!("look up {name}"))?;
-    let mut read = reply.read();
-    status::ok(&mut read).with_context(|| format!("look up {name}"))?;
-    match read.object().with_context(|| format!("read what the directory answered for {name}"))? {
-        Some(handle) => Ok(Some(crate::driver::Handle::hold(binder, handle)?)),
+    let mut said: Option<anyhow::Error> = None;
+    for form in forms() {
+        crate::parcel::use_header(form.header);
+        let mut call = Parcel::call(DIRECTORY);
+        form.write_name(&mut call, name);
+        let reply = match directory.transact(form.check, &call) {
+            Ok(reply) => reply,
+            Err(e) => {
+                said = Some(anyhow::Error::from(e).context(format!("look up {name}")));
+                continue;
+            }
+        };
+        let mut read = reply.read();
+        let found = match status::ok(&mut read) {
+            Ok(()) => match read.object().with_context(|| format!("read what the directory answered for {name}"))? {
+                Some(handle) => crate::driver::Handle::hold(binder, handle).map(Some),
+                None => Ok(None),
+            },
+            Err(e) => Err(e).with_context(|| format!("look up {name}")),
+        };
+        match found {
+            // The form the directory answered in is the one it reads, even
+            // where the answer is that the name has nothing under it.
+            Ok(Some(handle)) => {
+                remember(form);
+                return Ok(Some(handle));
+            }
+            Ok(None) => {
+                remember(form);
+                return Ok(None);
+            }
+            Err(e) => said = Some(e),
+        }
+    }
+    match said {
+        Some(e) => Err(e),
         None => Ok(None),
     }
 }
@@ -99,32 +200,78 @@ pub fn find<'a>(binder: &'a crate::driver::Binder, name: &str) -> Result<Option<
 /// Register the object this program serves under `number`, through
 /// `binder`, as the service `name`: for every program to find, none of
 /// them in a sandbox, at no dump priority of its own. The directory takes
-/// a hardware service only where the phone's description names it.
+/// a hardware service only where the phone's description names it. The
+/// form of the calls is the one a lookup has already found the directory
+/// answering, and the registration is looked up again in the same form to
+/// be sure a form the directory does not read has not taken a wrong name.
 #[cfg(target_os = "android")]
 pub fn add(binder: &crate::driver::Binder, name: &str, number: u64) -> Result<()> {
-    let directory = binder.directory()?;
-    let mut call = Parcel::call(DIRECTORY);
-    call.string(name);
-    call.object(number);
-    call.bool(false);
-    call.i32(DUMP_PRIORITY_DEFAULT);
-    let reply = directory.transact(methods()?.add_service, &call).with_context(|| format!("register {name}"))?;
-    status::ok(&mut reply.read()).with_context(|| format!("register {name}"))
+    for form in forms() {
+        let directory = binder.directory()?;
+        let mut call = Parcel::call(DIRECTORY);
+        form.write_name(&mut call, name);
+        call.object(number);
+        call.bool(false);
+        call.i32(DUMP_PRIORITY_DEFAULT);
+        let reply = match directory.transact(form.methods().add_service, &call) {
+            Ok(reply) => reply,
+            Err(_) => {
+                continue;
+            }
+        };
+        if status::ok(&mut reply.read()).is_err() {
+            continue;
+        }
+        match find(binder, name)? {
+            Some(_) => {
+                remember(form);
+                return Ok(());
+            }
+            None => continue,
+        }
+    }
+    Err(anyhow::anyhow!("register {name}: the directory took none of the calls"))
 }
 
 /// Every name registered with the directory, the directory's own among
-/// them.
+/// them. The forms the directory's calls take are tried in turn, and the
+/// one that answers is kept for the calls to come.
 #[cfg(target_os = "android")]
 pub fn names(binder: &crate::driver::Binder) -> Result<Vec<String>> {
     let directory = binder.directory()?;
-    let mut call = Parcel::call(DIRECTORY);
-    call.i32(DUMP_PRIORITY_ALL);
-    let reply = directory.transact(methods()?.list_services, &call).context("list what has registered")?;
-    let mut read = reply.read();
-    status::ok(&mut read).context("list what has registered")?;
-    let count = read.i32().context("read how many have registered")?;
-    anyhow::ensure!(count >= 0, "the directory says {count} have registered");
-    (0..count).map(|_| read.string().context("read a registered name")).collect()
+    let mut said: Option<anyhow::Error> = None;
+    for form in forms() {
+        let mut call = Parcel::call(DIRECTORY);
+        call.i32(DUMP_PRIORITY_ALL);
+        let reply = match directory.transact(form.methods().list_services, &call) {
+            Ok(reply) => reply,
+            Err(e) => {
+                said = Some(anyhow::Error::from(e).context("list what has registered"));
+                continue;
+            }
+        };
+        let mut read = reply.read();
+        if status::ok(&mut read).is_err() {
+            continue;
+        }
+        let listed = (|| -> Result<Vec<String>> {
+            let count = read.i32().context("read how many have registered")?;
+            anyhow::ensure!(count >= 0, "the directory says {count} have registered");
+            (0..count).map(|_| read.string().context("read a registered name")).collect()
+        })()
+        .context("list what has registered");
+        match listed {
+            Ok(names) => {
+                remember(form);
+                return Ok(names);
+            }
+            Err(e) => said = Some(e),
+        }
+    }
+    match said {
+        Some(e) => Err(e),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// The process that serves an object.
@@ -149,12 +296,32 @@ pub fn interface(service: &crate::driver::Handle) -> Result<String> {
 #[cfg(target_os = "android")]
 pub fn declared(binder: &crate::driver::Binder, name: &str) -> Result<bool> {
     let directory = binder.directory()?;
-    let mut call = Parcel::call(DIRECTORY);
-    call.string(name);
-    let reply = directory.transact(methods()?.is_declared, &call).with_context(|| format!("ask whether {name} is described"))?;
-    let mut read = reply.read();
-    status::ok(&mut read).with_context(|| format!("ask whether {name} is described"))?;
-    read.bool().with_context(|| format!("read whether {name} is described"))
+    let mut said = None;
+    for form in forms() {
+        let mut call = Parcel::call(DIRECTORY);
+        form.write_name(&mut call, name);
+        let reply = match directory.transact(form.methods().is_declared, &call) {
+            Ok(reply) => reply,
+            Err(e) => {
+                said = Some(anyhow::Error::from(e).context(format!("ask whether {name} is described")));
+                continue;
+            }
+        };
+        let mut read = reply.read();
+        let told = status::ok(&mut read)
+            .and_then(|()| read.bool().with_context(|| format!("read whether {name} is described")));
+        match told {
+            Ok(answer) => {
+                remember(form);
+                return Ok(answer);
+            }
+            Err(e) => said = Some(e),
+        }
+    }
+    match said {
+        Some(e) => Err(e),
+        None => Ok(false),
+    }
 }
 
 /// A name no phone's directory has, asked for to tell which mark the
@@ -169,16 +336,26 @@ const PROBE: &str = "skyward.header.probe";
 /// phone's does, takes only the system mark.
 #[cfg(target_os = "android")]
 pub fn choose_header(binder: &crate::driver::Binder) -> Result<i32> {
-    for header in [crate::parcel::HEADER_SYSTEM, crate::parcel::HEADER_RECOVERY] {
-        crate::parcel::use_header(header);
-        if find(binder, PROBE).is_ok() {
-            return Ok(header);
+    // The directory's own process may take a while to start, and while it
+    // has not, every call ends in the driver. The form it answers in is
+    // found by trying, and the mark it reads comes with the form.
+    let give = std::time::Instant::now() + std::time::Duration::from_secs(12);
+    let mut said = None;
+    loop {
+        match find(binder, PROBE) {
+            Ok(_) => return Ok(crate::parcel::header_mark()),
+            Err(e) => {
+                said = Some(e);
+                if std::time::Instant::now() >= give {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
         }
     }
-    // Neither mark was taken: ask once more with the last one tried, so the
-    // caller hears why the directory turns the calls away.
+    // The directory never answered: ask once more, so the caller hears why.
     find(binder, PROBE)?;
-    Ok(crate::parcel::HEADER_RECOVERY)
+    Err(said.unwrap_or_else(|| anyhow::anyhow!("the directory answers nothing")))
 }
 
 #[cfg(test)]

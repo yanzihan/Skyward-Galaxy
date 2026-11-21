@@ -2,7 +2,7 @@
 //! recovery: the libraries their partitions were built against, and a
 //! service directory that knows the phone describes them.
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -83,6 +83,33 @@ const DIRECTORY_OFF: &str = "hwservicemanager.disabled";
 /// system carries. A recovery has no framework of its own, so this is read
 /// as the framework's description of what it offers.
 const RECOVERY_MANIFEST: &str = "/system/etc/vintf/manifest.xml";
+
+/// Start the service directory the recovery's own programs and the newer
+/// key service register with, where init did not make one: a third-party
+/// recovery's init has none, and the installed system's key service cannot
+/// be found without it.
+pub fn start_directory() -> Result<()> {
+    if crate::services::running(DIRECTORY_PROGRAM).is_some() {
+        return Ok(());
+    }
+    std::process::Command::new(DIRECTORY_PROGRAM)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("start {DIRECTORY_PROGRAM}"))?;
+    let until = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < until {
+        if let Ok(binder) = skyward_binder::driver::Binder::open()
+            && skyward_binder::service::names(&binder).is_ok()
+        {
+            let _ = skyward_sys::kmsg("the service directory is up");
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    bail!("{DIRECTORY_PROGRAM} did not answer within three seconds")
+}
 
 /// What the directory for the phone's hardware services of the older kind
 /// needs before it will run inside a recovery. The program is the installed
@@ -271,11 +298,22 @@ pub fn publish_descriptions(wanted: &[String]) -> Result<()> {
     // since.
     let binder = skyward_binder::driver::Binder::open()?;
     // The first it does not know described settles that it starts again.
+    // A directory the ask fails for — one whose calls our client does not
+    // speak, say — is left as it is: the ask is only here to spare it a
+    // restart, and a directory that cannot answer for a name will not take
+    // one away either.
     let mut unknown = false;
     for name in wanted {
-        if !skyward_binder::service::declared(&binder, name).with_context(|| format!("ask the service directory whether it knows {name} described"))? {
-            unknown = true;
-            break;
+        match skyward_binder::service::declared(&binder, name) {
+            Ok(false) => {
+                unknown = true;
+                break;
+            }
+            Ok(true) => {}
+            Err(e) => {
+                skyward_sys::kmsg(&format!("ask the service directory whether it knows {name} described: {e:#}"))?;
+                return Ok(());
+            }
         }
     }
     if unknown || rewritten > 0 {

@@ -11,19 +11,35 @@ pub const HEADER_RECOVERY: i32 = i32::from_be_bytes(*b"RECO");
 /// only this one.
 pub const HEADER_SYSTEM: i32 = i32::from_be_bytes(*b"SYST");
 
+/// The mark a libbinder built for the vendor writes, and the one whose place
+/// in the header a directory that predates the mark leaves empty.
+pub const HEADER_VENDOR: i32 = i32::from_be_bytes(*b"VNDR");
+
+/// A header of no mark at all: the directories of builds before the mark
+/// was introduced read the header as two marks, and the mark's room breaks
+/// the interface name that follows.
+pub const HEADER_NONE: i32 = 0;
+
 /// Which mark the calls made from here carry, settled by
 /// [`crate::service::choose_header`] before the first call to the service
 /// directory. The recovery's own copy is what a recovery ramdisk usually
 /// carries, so that is what stands until the directory says otherwise.
 static HEADER: AtomicI32 = AtomicI32::new(HEADER_RECOVERY);
 
-/// Make every call written from here carry `header`.
+/// Make every call written from here carry `header`; [`HEADER_NONE`] leaves
+/// the mark out of the header entirely.
 pub fn use_header(header: i32) {
     HEADER.store(header, Ordering::Relaxed);
 }
 
 fn header() -> i32 {
     HEADER.load(Ordering::Relaxed)
+}
+
+/// The mark the calls made from here carry now, for saying which copy of
+/// libbinder the directory was found to read.
+pub fn header_mark() -> i32 {
+    header()
 }
 
 /// Strict mode gathers violations rather than acting on them; a caller with
@@ -92,12 +108,17 @@ impl Payload for Parcel {
 
 impl Parcel {
     /// A call to `interface`, opened with the header libbinder reads before
-    /// it looks at anything the method itself takes.
+    /// it looks at anything the method itself takes. A directory of a build
+    /// before the mark was introduced reads the header as two marks only,
+    /// which [`HEADER_NONE`] gives it.
     pub fn call(interface: &str) -> Parcel {
         let mut p = Parcel::default();
         p.i32(STRICT_MODE_PENALTY_GATHER);
         p.i32(UNSET_WORK_SOURCE);
-        p.i32(header());
+        let mark = header();
+        if mark != HEADER_NONE {
+            p.i32(mark);
+        }
         p.string(interface);
         p
     }
@@ -176,6 +197,16 @@ impl Parcel {
             self.data.extend_from_slice(&u.to_le_bytes());
         }
         self.data.extend_from_slice(&0u16.to_le_bytes());
+        self.pad();
+    }
+
+    /// Text as the AIDL interfaces write it: the count of bytes the text
+    /// and its terminator take, those bytes, the terminator, and padding.
+    /// The newer directories take names in this form, not as UTF-16.
+    pub fn string_utf8(&mut self, s: &str) {
+        self.i32(s.len() as i32 + 1);
+        self.data.extend_from_slice(s.as_bytes());
+        self.data.push(0);
         self.pad();
     }
 
@@ -286,6 +317,18 @@ impl<'a> Reader<'a> {
         self.skip_padding();
         let utf16: Vec<u16> = raw[..units as usize * 2].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
         Ok(String::from_utf16_lossy(&utf16))
+    }
+
+    /// Text as the AIDL interfaces write it: the count of bytes the text
+    /// and its terminator take, those bytes, and the terminator.
+    pub fn string_utf8(&mut self) -> Result<String> {
+        let len = self.i32()?;
+        if len < 1 {
+            bail!("text of length {len} was read where some was expected");
+        }
+        let raw = self.take(len as usize)?.to_vec();
+        self.skip_padding();
+        Ok(String::from_utf8_lossy(&raw[..raw.len() - 1]).into_owned())
     }
 
     /// The handle of an object in the sending process. The other kinds of
