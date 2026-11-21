@@ -523,6 +523,13 @@ fn main() -> Result<()> {
         Cmd::Ui { config, font, mono, unlock, dump } => {
             let cfg = DeviceConfig::load(&config)?;
             let start = if unlock { skyward_ui::app::Screen::Decrypt } else { skyward_ui::app::Screen::Home };
+            // The newer key service of an Android 12 or later vendor build is
+            // registered with the recovery's own service directory; a
+            // third-party recovery's init does not start one, and the
+            // directory has to answer before the phone's services are read.
+            if let Err(e) = secure::start_directory() {
+                eprintln!("the service directory did not start: {e:#}");
+            }
             // The programs the recovery service started for the phone's
             // keys are read from the partitions again, as it read them;
             // where they do not show, it started none.
@@ -1013,6 +1020,12 @@ fn prepare(cfg: &DeviceConfig, slot: skyward_vab::Slot) -> Result<Vec<skyward_co
             }
             for m in &mounts.partitions {
                 skyward_sys::kmsg(&format!("mounted {} on {} ({})", m.partition, m.mount_point.display(), m.filesystem))?;
+            }
+            // The newer key service of an Android 12 or later vendor build
+            // registers with the recovery's own service directory, which a
+            // third-party recovery's init does not start.
+            if let Err(e) = secure::start_directory() {
+                skyward_sys::kmsg(&format!("the service directory did not start: {e:#}"))?;
             }
             let found = secure::libraries().and_then(|libraries| keys::found(slot, libraries.as_deref()));
             let steps = found.as_ref().ok().and_then(|found| found.steps.as_deref().ok());
