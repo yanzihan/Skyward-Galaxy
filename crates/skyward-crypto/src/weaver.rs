@@ -15,8 +15,13 @@ use skyward_binder::status;
 pub const SERVICE: &str = "android.hardware.weaver.IWeaver/default";
 const INTERFACE: &str = "android.hardware.weaver.IWeaver";
 
+/// The weaver of the older kind, and the instance it is looked up by.
+const HIDL_SERVICE: &str = "android.hardware.weaver@1.0::IWeaver";
+const INSTANCE: &str = "default";
+
 const GET_CONFIG: u32 = 1;
-const READ: u32 = 2;
+const WRITE: u32 = 2;
+const READ: u32 = 3;
 
 /// How a read went, as the weaver's second version says it in its answer.
 const READ_OK: i32 = 0;
@@ -100,28 +105,126 @@ fn value(read: &mut Reader) -> Result<Vec<u8>> {
 #[cfg(target_os = "android")]
 pub struct Weaver<'a> {
     device: skyward_binder::driver::Handle<'a>,
+    kind: Kind,
 }
+
+/// Which of the two ways a weaver is reached: the newer kind registers with
+/// the directory the rest of the phone uses, and the older with the one the
+/// phone's hardware services use, whose calls and answers read differently.
+#[cfg(target_os = "android")]
+enum Kind {
+    Aidl,
+    Hidl,
+}
+
+/// How long a weaver that is starting may take to register. One whose slots
+/// the secure world keeps comes up only once the data partition is mounted,
+/// its program starting over until then, and a slot read is what the data
+/// partition is opened for.
+#[cfg(target_os = "android")]
+const WEAVER_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[cfg(target_os = "android")]
 impl<'a> Weaver<'a> {
-    /// Reach the running weaver, or say that none is.
-    pub fn open(binder: &'a skyward_binder::driver::Binder) -> Result<Weaver<'a>> {
-        let device = skyward_binder::service::find(binder, SERVICE)?
-            .with_context(|| format!("{SERVICE} is not running; the phone's weaver has to be started first"))?;
-        Ok(Weaver { device })
+    /// Reach the running weaver, or say that none is. One of the newer kind
+    /// is asked of the phone's own directory, and one of the older of the
+    /// directory its hardware services register with. One that is coming up
+    /// is waited for.
+    pub fn open(binder: &'a skyward_binder::driver::Binder, hardware: &'a skyward_binder::driver::Binder) -> Result<Weaver<'a>> {
+        let not_running = || format!("{SERVICE} is not running; the phone's weaver has to be started first");
+        let until = std::time::Instant::now() + WEAVER_WAIT;
+        loop {
+            if let Some(device) = skyward_binder::service::find(binder, SERVICE)? {
+                return Ok(Weaver { device, kind: Kind::Aidl });
+            }
+            if let Some(device) = skyward_binder::hidl::find(hardware, HIDL_SERVICE, INSTANCE)? {
+                return Ok(Weaver { device, kind: Kind::Hidl });
+            }
+            if std::time::Instant::now() >= until {
+                bail!("{}", not_running());
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
     }
 
     pub fn config(&self) -> Result<Config> {
-        let reply = self.device.transact(GET_CONFIG, &ask_config()).context("ask the weaver about itself")?;
-        config(&mut reply.read())
+        match self.kind {
+            Kind::Aidl => {
+                let reply = self.device.transact(GET_CONFIG, &ask_config()).context("ask the weaver about itself")?;
+                config(&mut reply.read())
+            }
+            Kind::Hidl => {
+                let reply = self.device.transact(GET_CONFIG, &skyward_binder::hidl::Message::call(HIDL_SERVICE)).context("ask the weaver about itself")?;
+                let mut read = skyward_binder::hidl::Answer::new(reply.bytes());
+                read.status().context("ask the weaver about itself")?;
+                let said = read.i32().context("read how the weaver answered")?;
+                if said != 0 {
+                    bail!("the weaver failed to say what it is ({said})");
+                }
+                // The config comes as a run of bytes the driver moved here:
+                // how many slots, how long the keys, how long the values.
+                let config = read.pointed().context("read what the weaver says of itself")?;
+                let (slots, key, value) = (u32::from_le_bytes(config[0..4].try_into().expect("four bytes")) as i32, u32::from_le_bytes(config[4..8].try_into().expect("four bytes")) as i32, u32::from_le_bytes(config[8..12].try_into().expect("four bytes")) as i32);
+                let size = |n: i32, what: &str| usize::try_from(n).with_context(|| format!("the weaver says its {what} are {n} bytes long"));
+                Ok(Config {
+                    slots: u32::try_from(slots).with_context(|| format!("the weaver says it has {slots} slots"))?,
+                    key_bytes: size(key, "keys")?,
+                    value_bytes: size(value, "values")?,
+                })
+            }
+        }
     }
 
     /// The value `slot` keeps behind `key`. A wrong key is counted against
     /// the slot by the secure element, so this is not something to call
     /// twice over on a guess.
     pub fn read(&self, slot: u32, key: &[u8]) -> Result<Vec<u8>> {
-        let reply = self.device.transact(READ, &ask_value(slot, key)).with_context(|| format!("read slot {slot} of the weaver"))?;
-        value(&mut reply.read())
+        match self.kind {
+            Kind::Aidl => {
+                let reply = self.device.transact(READ, &ask_value(slot, key)).with_context(|| format!("read slot {slot} of the weaver"))?;
+                value(&mut reply.read())
+            }
+            Kind::Hidl => {
+                let mut call = skyward_binder::hidl::Message::call(HIDL_SERVICE);
+                call.u32(slot);
+                call.bytes(key);
+                let reply = self.device.transact(READ, &call).with_context(|| format!("read slot {slot} of the weaver"))?;
+                let mut read = skyward_binder::hidl::Answer::new(reply.bytes());
+                read.status().with_context(|| format!("read slot {slot} of the weaver"))?;
+                let said = read.i32().context("read how the read went")?;
+                let answer = match read.pointed() {
+                    Ok(bytes) => bytes.to_vec(),
+                    Err(e) if said == 0 => return Err(e).context("read the value the slot keeps"),
+                    Err(_) => Vec::new(),
+                };
+                // The answer carries how long to wait beside the value it
+                // read, which it points at in the room the driver mapped for
+                // the reply, which both ends see at the same address.
+                let (wait, bytes) = match answer.len() >= 20 {
+                    true => {
+                        let wait = i32::from_le_bytes(answer[0..4].try_into().expect("four bytes"));
+                        let at = u64::from_le_bytes(answer[8..16].try_into().expect("eight bytes"));
+                        let length = u32::from_le_bytes(answer[16..20].try_into().expect("four bytes")) as usize;
+                        let bytes = match at {
+                            0 => Vec::new(),
+                            _ => unsafe { std::slice::from_raw_parts(at as *const u8, length) }.to_vec(),
+                        };
+                        (wait, bytes)
+                    }
+                    false => (0, answer),
+                };
+                let seconds = (wait.max(0) as u64).div_ceil(1000);
+                match said {
+                    READ_OK => Ok(bytes),
+                    READ_THROTTLE => bail!("the secure element is holding off further tries for another {seconds} seconds"),
+                    READ_INCORRECT_KEY if wait > 0 => {
+                        bail!("the secure element does not recognise that credential, and holds off further tries for another {seconds} seconds")
+                    }
+                    READ_INCORRECT_KEY => bail!("the secure element does not recognise that credential"),
+                    _ => bail!("the weaver failed to read the slot"),
+                }
+            }
+        }
     }
 }
 

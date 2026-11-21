@@ -484,7 +484,8 @@ fn open_user_files(service: &Service<'_>, user: u32, credential: Option<&[u8]>, 
         // the secret is then guarded by nothing else.
         (Bound::Weaver(slot), _) => {
             let binder = Binder::open()?;
-            let weaver = Weaver::open(&binder)?;
+            let hardware = Binder::hardware()?;
+            let weaver = Weaver::open(&binder, &hardware)?;
             let key = crate::user::weaver_key(&stretched, weaver.config()?.key_bytes)?;
             let value = weaver.read(*slot, &key)?;
             (crate::user::weaver_protector_secret(&stretched, &value), None)

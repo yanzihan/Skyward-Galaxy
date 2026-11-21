@@ -428,7 +428,8 @@ fn main() -> Result<()> {
         #[cfg(target_os = "android")]
         Cmd::Keymint { key, alias } => {
             let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
-            let service = skyward_crypto::Service::open(&binder, &hardware)?;
+            let vendor = skyward_binder::driver::Binder::vendor().ok();
+            let service = skyward_crypto::Service::open(&binder, vendor.as_ref(), &hardware)?;
             match &service {
                 skyward_crypto::Service::KeyMint(service) => {
                     let hw = service.hardware()?;
@@ -510,7 +511,8 @@ fn main() -> Result<()> {
         Cmd::Data { credential, close: false } => {
             use skyward_crypto::data;
             let (binder, hardware) = (skyward_binder::driver::Binder::open()?, skyward_binder::driver::Binder::hardware()?);
-            let service = skyward_crypto::Service::open(&binder, &hardware)?;
+            let vendor = skyward_binder::driver::Binder::vendor().ok();
+            let service = skyward_crypto::Service::open(&binder, vendor.as_ref(), &hardware)?;
             let opening = data::open_without_credential(&service)?;
             match &opening.mounted {
                 Some(mounted) => {

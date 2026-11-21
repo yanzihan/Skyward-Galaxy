@@ -45,16 +45,21 @@ enum Through {
     ElementService,
     /// A service of the secure element's maker's own, by its interface.
     Own(&'static str),
+    /// Nothing Android describes: its slots the secure world keeps of
+    /// itself, and the weaver's program reaches it on its own.
+    SecureWorld,
 }
 
 /// The makes of weaver, each by what the name of its program ends in, the
 /// longer endings first: Thales' and NXP's go through Android's secure
-/// element service, and Goodix's, whose program is named after no maker,
-/// through Goodix's own.
-const WEAVERS: [(&str, Through); 3] = [
+/// element service, Goodix's, whose program is named after no maker, through
+/// Goodix's own, and Samsung's through nothing Android names, the slots the
+/// secure world of its Hermes daemon keeps.
+const WEAVERS: [(&str, Through); 4] = [
     (".thales", Through::ElementService),
     (".nxp-qti", Through::ElementService),
     ("weaver-service", Through::Own("vendor.goodix.hardware.secure_element_aidl.IGdxEse")),
+    ("hermesd", Through::SecureWorld),
 ];
 
 /// Qualcomm's programs between Android and the secure world, by the names
@@ -67,7 +72,7 @@ const OPENERS: [&str; 2] = ["ssgtzd", "hlosminkdaemon"];
 
 /// The directory for hardware services of the older kind, by the name init
 /// knows it under, and the property it sets once it takes calls.
-const HARDWARE_DIRECTORY: &str = "hwservicemanager";
+pub const HARDWARE_DIRECTORY: &str = "hwservicemanager";
 const HARDWARE_DIRECTORY_READY: &str = "hwservicemanager.ready";
 
 /// The folders a program's libraries are looked for in, by the partition
@@ -227,7 +232,18 @@ pub fn steps(phone: &Phone) -> Result<Vec<Step>> {
     let registers = besides(phone, program, &credentials, alone);
     start(&mut out, started(phone, program, ready(credentials, credentials_kind), registers));
 
-    if described(phone, Kind::Aidl, WEAVER).is_some() {
+    // A weaver is described of the newer kind, or of the older one, as
+    // Samsung's is, where the slots live in the secure world and the
+    // program that serves it registers with the directory for hardware
+    // services.
+    let weaver_of = |kind: Kind| {
+        phone.services.iter().find(|s| {
+            s.described.kind == kind
+                && (s.described.package.as_str(), s.described.interface.as_str()) == ("android.hardware.weaver", "IWeaver")
+                && s.described.instance == INSTANCE
+        })
+    };
+    if weaver_of(Kind::Aidl).is_some() || weaver_of(Kind::Hidl).is_some() {
         out.extend(weaver(phone)?);
     }
 
@@ -281,7 +297,17 @@ pub fn programs(steps: &[Step]) -> Vec<&Started> {
 /// through, and then the weaver itself.
 fn weaver(phone: &Phone) -> Result<Vec<Step>> {
     let mut out = Vec::new();
-    let program = behind(phone, "the weaver", WEAVER, |file| file.contains("weaver-service"))?;
+    let of = |kind: Kind| {
+        phone
+            .services
+            .iter()
+            .find(|s| s.described.kind == kind && (s.described.package.as_str(), s.described.interface.as_str()) == ("android.hardware.weaver", "IWeaver") && s.described.instance == INSTANCE)
+    };
+    let (name, kind) = match of(Kind::Aidl) {
+        Some(_) => (WEAVER.to_string(), Kind::Aidl),
+        None => (of(Kind::Hidl).expect("the phone describes a weaver").described.name(), Kind::Hidl),
+    };
+    let program = behind(phone, "the weaver", &name, |file| WEAVERS.iter().any(|(ending, _)| file.ends_with(ending)))?;
     let file = file_name(program);
     let (_, through) = WEAVERS.iter().find(|(ending, _)| file.ends_with(ending)).with_context(|| format!("{} is a weaver of a make the recovery does not know", program.path))?;
     match through {
@@ -311,8 +337,26 @@ fn weaver(phone: &Phone) -> Result<Vec<Step>> {
             }
             out.push(Step::ServeElements);
         }
+        Through::SecureWorld => {}
     }
-    let mut weaver = started(phone, program, Ready::Service(WEAVER.into()), besides(phone, program, WEAVER, |_| false));
+    // A weaver whose slots the secure world keeps comes up only once the
+    // data partition is mounted, for the state it keeps beside the phone's
+    // own: it is started here and left to its own retries, and whoever
+    // reads a slot waits for it then.
+    let ready = match (kind, through) {
+        (Kind::Aidl, _) => Ready::Service(name.clone()),
+        (Kind::Hidl, Through::SecureWorld) => Ready::Nothing,
+        (Kind::Hidl, _) => Ready::HardwareService(name.clone()),
+    };
+    let mut weaver = started(phone, program, ready, besides(phone, program, &name, |_| false));
+    // A weaver whose slots the secure world keeps runs on the installed
+    // system's C++ runtime, which the libraries beside it were built
+    // against, where a recovery's own is older and misses what those ask
+    // for. Preloading it takes it ahead of the recovery's own.
+    if *through == Through::SecureWorld {
+        weaver.environment.retain(|(name, _)| name != "LD_PRELOAD");
+        weaver.environment.push(("LD_PRELOAD".to_string(), format!("{}/libc++.so", SHARED_LIBRARIES[0])));
+    }
     weaver.anew = *through == Through::ElementService;
     out.push(Step::Start(Box::new(weaver)));
     Ok(out)
