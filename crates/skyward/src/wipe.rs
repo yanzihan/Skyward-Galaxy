@@ -703,7 +703,20 @@ pub fn remake_cache(entry: &Entry, filesystem: &str) -> Result<()> {
     let kept = read_logs(&device, at)?;
     remake(entry, filesystem)?;
     let Some((folder, logs)) = kept else { return Ok(()) };
-    fs::create_dir_all(at).with_context(|| format!("make {}", at.display()))?;
+    // A phone that mounts no cache of its own points /cache into its data
+    // partition's folder, which a data partition taken away leaves pointing
+    // at nothing; the folder is made where the link points, and the
+    // partition mounts through the link as it did.
+    match fs::read_link(at) {
+        Ok(target) => {
+            let target = match target.is_absolute() {
+                true => target,
+                false => at.parent().unwrap_or(Path::new("/")).join(target),
+            };
+            fs::create_dir_all(&target).with_context(|| format!("make {}", target.display()))?;
+        }
+        Err(_) => fs::create_dir_all(at).with_context(|| format!("make {}", at.display()))?,
+    }
     // The table's options are for the filesystem it names.
     let options: &[String] = if filesystem == entry.filesystem { &entry.options } else { &[] };
     mount::mount(&device, at, filesystem, options)?;
