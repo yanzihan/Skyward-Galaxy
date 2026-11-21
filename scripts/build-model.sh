@@ -34,11 +34,13 @@ while :; do
   N=$((N + 1))
 done
 OUT="$C/target/$BASE$TAG"
+# 默认用仓库里未修改的 MiSans;FONT=... 可临时换一款(比如空间不够的测试版)
+FONT=${FONT:-$C/resources/fonts/MiSansVF.ttf}
 
 $C/target/release/skyward-pack recovery --stock "$FOX" \
   --binary $C/target/aarch64-linux-android/release/skyward \
   --system-init $C/target/system-init/aarch64-linux-android/release/system-init \
-  --config "$CFG" --font $C/resources/fonts/MiSansVF.ttf \
+  --config "$CFG" --font "$FONT" \
   --mono $C/resources/fonts/KirkMono-Regular.ttf --mono-license $C/resources/fonts/KirkMono-OFL.txt \
   --third-party --no-mtp --partition-size "$PART" \
   "${EXTRA[@]}" --out "$WORK/base.img" | tail -1

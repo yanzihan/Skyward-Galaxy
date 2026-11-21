@@ -120,30 +120,26 @@ impl BootImage {
             BootHeader::Legacy(header) => {
                 let page = header.page_size as usize;
                 let mut header = header.clone();
-                // Where the recovery dtbo sat in the image before its parts
-                // changed, as the header's own copy of the load address names
-                // it on the phones that keep the address equal to the offset
-                // (Samsung's recovery does): the new one is where it sits now.
-                let before = {
-                    let p = |size: u32| (size as usize).div_ceil(page) * page;
-                    page + p(header.kernel_size) + p(header.ramdisk_size) + p(header.second_bootloader_size)
-                };
                 header.kernel_size = u32::try_from(self.kernel.len()).context("kernel size")?;
                 header.ramdisk_size = u32::try_from(self.ramdisk.len()).context("ramdisk size")?;
                 header.second_bootloader_size = u32::try_from(self.second.len()).context("second size")?;
+                // Where the recovery dtbo sits in the image being written: the
+                // bootloader reads it there, so the header is given that place,
+                // whatever place the image it was read from named.
+                let dtbo_at = (page + page_align(self.kernel.len(), page) + page_align(self.ramdisk.len(), page) + page_align(self.second.len(), page)) as u64;
                 match &mut header.versioned {
                     HeaderV0Versioned::V0 => {}
                     HeaderV0Versioned::V1 { recovery_dtbo_size, recovery_dtbo_addr, .. } => {
                         *recovery_dtbo_size = u32::try_from(self.recovery_dtbo.len()).context("dtbo size")?;
-                        if *recovery_dtbo_addr == before as u64 {
-                            *recovery_dtbo_addr = (page + page_align(self.kernel.len(), page) + page_align(self.ramdisk.len(), page) + page_align(self.second.len(), page)) as u64;
+                        if !self.recovery_dtbo.is_empty() {
+                            *recovery_dtbo_addr = dtbo_at;
                         }
                     }
                     HeaderV0Versioned::V2 { recovery_dtbo_size, recovery_dtbo_addr, dtb_size, .. } => {
                         *recovery_dtbo_size = u32::try_from(self.recovery_dtbo.len()).context("dtbo size")?;
                         *dtb_size = u32::try_from(self.dtb.len()).context("dtb size")?;
-                        if *recovery_dtbo_addr == before as u64 {
-                            *recovery_dtbo_addr = (page + page_align(self.kernel.len(), page) + page_align(self.ramdisk.len(), page) + page_align(self.second.len(), page)) as u64;
+                        if !self.recovery_dtbo.is_empty() {
+                            *recovery_dtbo_addr = dtbo_at;
                         }
                     }
                 }

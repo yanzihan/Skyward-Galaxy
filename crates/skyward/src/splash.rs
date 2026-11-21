@@ -34,10 +34,17 @@ const WORDMARK_AT: f32 = 0.47;
 /// slower still.
 const FRAME: Duration = Duration::from_millis(33);
 
+/// How long the picture is shown at the least, however quickly the recovery
+/// gets ready: on a phone that mounts its partitions in a tenth of a second
+/// the picture would otherwise be gone before it is seen.
+const MIN_SHOW: Duration = Duration::from_millis(1200);
+
 /// A picture being shown, ended by [`Splash::stop`] or with this value.
 pub struct Splash {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    /// When the picture went on the panel.
+    started: Instant,
 }
 
 impl Splash {
@@ -55,6 +62,7 @@ impl Splash {
         // since, read before the picture starts.
         let dark = crate::settings::read().ok().and_then(|kept| kept.settings().map(|s| s.dark)).unwrap_or(false);
         let (font, mono) = (font.to_path_buf(), mono.to_path_buf());
+        let started = Instant::now();
         let thread = std::thread::Builder::new()
             .name("splash".into())
             .spawn(move || {
@@ -63,11 +71,17 @@ impl Splash {
                 }
             })
             .ok()?;
-        Some(Splash { stop, thread: Some(thread) })
+        Some(Splash { stop, thread: Some(thread), started })
     }
 
-    /// Give the panel back, and wait until the picture has let go of it.
+    /// Give the panel back, and wait until the picture has let go of it. The
+    /// picture is left up for [`MIN_SHOW`] however little there was to wait
+    /// for, so that it is seen.
     pub fn stop(mut self) {
+        let left = MIN_SHOW.saturating_sub(self.started.elapsed());
+        if !left.is_zero() {
+            std::thread::sleep(left);
+        }
         self.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();

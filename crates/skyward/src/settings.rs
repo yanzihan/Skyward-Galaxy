@@ -80,6 +80,8 @@ fn with_metadata<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
     if mount::is_mount_point(at)? {
         return work();
     }
+    // A third-party recovery's ramdisk may have no /metadata to mount on.
+    fs::create_dir_all(at).with_context(|| format!("make {}", at.display()))?;
     mount::mount_ro(&Path::new(skyward_block::BY_NAME).join("metadata"), at)?;
     let done = work();
     mount::umount(at)?;

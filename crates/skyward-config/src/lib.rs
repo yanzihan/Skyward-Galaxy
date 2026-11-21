@@ -295,6 +295,12 @@ pub struct Device {
     pub brand: String,
     #[serde(default)]
     pub model: String,
+    /// The phone's own model name, such as SM-F7210, where the stock
+    /// recovery the image is built on was made for another one and its
+    /// property file names that: the recovery sets it as it starts, and
+    /// the USB port and the file transfer show it.
+    #[serde(default)]
+    pub product: Option<String>,
     #[serde(default = "default_true")]
     pub ab: bool,
     /// SoC marketing name shown on the About page.

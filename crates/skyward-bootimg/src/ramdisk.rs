@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use cpio::{NewcBuilder, NewcReader};
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use std::ffi::{CString, OsStr};
@@ -192,6 +192,16 @@ impl Ramdisk {
             Some(_) => bail!("{name} is not a regular file"),
             None => bail!("{name} is not in the ramdisk"),
         }
+    }
+
+    /// Take every regular file under the folder `dir` out of the ramdisk: a
+    /// third-party recovery's theme is only for its own program.
+    pub fn remove_tree(&mut self, dir: &str) -> Result<()> {
+        let prefix = format!("{}/", dir.trim_end_matches('/'));
+        let before = self.entries.len();
+        self.entries.retain(|e| !(e.mode & S_IFMT == S_IFREG && e.name.starts_with(&prefix)));
+        ensure!(before != self.entries.len(), "{dir} holds no file to leave out");
+        Ok(())
     }
 
     /// Add a root-owned regular file, creating missing parent directories.
@@ -446,6 +456,18 @@ mod tests {
         assert_eq!(names, ["twres", "twres/fonts", "system", "system/bin", "system/bin/recovery"]);
         assert!(rd.remove("twres/fonts/wqy-microhei.ttf").is_err());
         assert!(rd.remove("twres").is_err(), "a folder is not a regular file");
+    }
+
+    #[test]
+    fn a_folder_is_left_out_whole() {
+        let mut rd = Ramdisk { entries: Vec::new() };
+        rd.add("twres/fonts/a.ttf", 0o644, b"a".to_vec()).unwrap();
+        rd.add("twres/languages/en", 0o644, b"b".to_vec()).unwrap();
+        rd.add("system/bin/recovery", 0o750, b"c".to_vec()).unwrap();
+        rd.remove_tree("twres/").unwrap();
+        let names: Vec<&str> = rd.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["twres", "twres/fonts", "twres/languages", "system", "system/bin", "system/bin/recovery"]);
+        assert!(rd.remove_tree("twres/").is_err(), "nothing more is there to take out");
     }
 
     /// What the reference `lz4` tool unpacks `packed` to.

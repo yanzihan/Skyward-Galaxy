@@ -166,7 +166,11 @@ fn main() -> Result<()> {
             // program and theme use; the image replaces the program, and the
             // device's configuration names what is left without a user.
             for name in &cfg.device.drop {
-                rd.remove(name)?;
+                if name.ends_with('/') {
+                    rd.remove_tree(name)?;
+                } else {
+                    rd.remove(name)?;
+                }
             }
             rd.replace(paths::RECOVERY, read(&binary)?)?;
             // Install scripts look for the commands a stock recovery lacks
@@ -209,8 +213,19 @@ fn main() -> Result<()> {
                 .find(paths::PROP_DEFAULT)
                 .with_context(|| format!("{} is not in the ramdisk", paths::PROP_DEFAULT))?
                 .data;
-            let mut props = without(stock_props, &BUILD_VERSION);
+            // A third-party recovery's ramdisk carries its own, older build's
+            // version and patch level; the recovery sets them to the installed
+            // system's as it starts, which init allows only while they are
+            // unset. A stock recovery's own init reads them, so they stay.
+            let mut props = if third_party { without(stock_props, &BUILD_VERSION) } else { stock_props.clone() };
             props.extend_from_slice(b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n");
+            // A recovery built on another phone's image carries that phone's
+            // model name, which its own init gives the USB port and the file
+            // transfer; the phone's own model is set here, after it, where
+            // the configuration names it.
+            if let Some(product) = &cfg.device.product {
+                props.extend_from_slice(format!("\nro.product.model={product}\n").as_bytes());
+            }
             rd.replace(paths::PROP_DEFAULT, props)?;
             img.ramdisk = rd.encode_in(format)?;
             let bytes = img.to_bytes()?;

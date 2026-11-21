@@ -1,0 +1,58 @@
+[device]
+codename = "b4q"
+brand = "Samsung"
+model = "Galaxy Z Flip4 5G"
+# 三星不用 A/B 无缝更新:boot/recovery 等分区不带 _a/_b 后缀
+ab = false
+soc = { hans = "骁龙®8+ Gen 1移动平台", hant = "Snapdragon® 8+ Gen 1 行動平台", en = "Snapdragon® 8+ Gen 1 Mobile Platform" }
+# 各 ROM 通用的系统版本字段
+os_version_prop = "ro.build.display.id"
+lang = "zh-CN"
+# 港版官方 recovery 基底:内核 5.10.236 和港版 vendor 的 QCA 模块同版本。
+# 100MiB 要塞下 Skyward + 完整 MiSans + qca_cld3,丢掉 recovery 用不到的:
+# 图形/摄像头之外的 GPU、Broadcom 的 dhd、mac80211、integrated WLAN 的
+# icnss2,以及官方 recovery 自己的界面图。
+drop = [
+    "res/",
+    "lib/modules/dhd.ko",
+    "lib/modules/mac80211.ko",
+    "lib/modules/msm_kgsl.ko",
+    "lib/modules/icnss2.ko",
+    # 换成为 qca_cld3 补好依赖行的版本(--add-file)
+    "lib/modules/modules.dep",
+]
+
+[display]
+width = 1080
+height = 2640
+# One UI 在 Flip4 上的密度,进系统后按 wm density 校准
+density = 450
+diagonal = 6.7
+brightness = 0.5
+corner_radius = 60
+
+[modules]
+# WiFi 是 Qualcomm QCA6490。港版官方 recovery 基底的内核 5.10.236 和港版
+# vendor_dlkm 的 qca_cld3 同版本;驱动、依赖模块和 modules.dep 都塞进了
+# ramdisk 的 /lib/modules,不再从安装系统的 vendor_dlkm 取(那边是国行
+# W7025 的模块,vermagic 对不上)。
+sources = ["vendor_boot"]
+load = []
+
+[wlan]
+modules = ["qca_cld3_wlan"]
+interface = "wlan0"
+supplicant = "/vendor/bin/hw/wpa_supplicant"
+# vendor 自己没有 libc++/liblog/libcrypto/libssl,靠 VNDK bundle 和系统补
+libraries = ["/vendor/lib64", "$bundle", "/system/lib64", "/mnt/system/system/lib64"]
+probe = "http://connectivitycheck.gstatic.com/generate_204"
+
+[haptics]
+strength = { lightest = 0.2, strongest = 1.0 }
+
+[haptics.timed]
+duration = "/sys/class/timed_output/vibrator/enable"
+intensity = "/sys/class/timed_output/vibrator/intensity"
+intensity_max = 10000
+click = 30
+ticks = 12
