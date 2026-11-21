@@ -1,8 +1,15 @@
 use std::collections::HashMap;
 
 /// Where the phone keeps the rules for its own device nodes, and the names
-/// its own partitions give to the accounts those rules name.
-pub const RULE_FILES: [&str; 2] = ["/vendor/etc/ueventd.rc", "/odm/etc/ueventd.rc"];
+/// its own partitions give to the accounts those rules name. Ueventd reads
+/// them from the root of the vendor and odm partitions, and a build that
+/// keeps them under `etc` beside the accounts it names is answered for too.
+pub const RULE_FILES: [&str; 4] = [
+    "/vendor/etc/ueventd.rc",
+    "/vendor/ueventd.rc",
+    "/odm/etc/ueventd.rc",
+    "/odm/ueventd.rc",
+];
 pub const PASSWD_FILES: [&str; 2] = ["/vendor/etc/passwd", "/odm/etc/passwd"];
 pub const GROUP_FILES: [&str; 2] = ["/vendor/etc/group", "/odm/etc/group"];
 
