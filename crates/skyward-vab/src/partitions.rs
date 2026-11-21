@@ -127,6 +127,8 @@ fn ensure_no_snapshot() -> Result<()> {
 pub fn mount_partitions(slot: Slot) -> Result<Mounts> {
     let metadata = Path::new(METADATA);
     if !mount::is_mount_point(metadata)? {
+        // A third-party recovery's ramdisk may have no /metadata to mount on.
+        fs::create_dir_all(metadata).with_context(|| format!("make {}", metadata.display()))?;
         mount::mount_ro(&Path::new(BY_NAME).join("metadata"), metadata)?;
     }
     let super_dev = super_device();
@@ -150,6 +152,43 @@ pub fn mount_partitions(slot: Slot) -> Result<Mounts> {
             _ => map_and_mount(p, &devices, slot)?,
         };
         mounts.partitions.push(mounted);
+    }
+    // The firmware the drivers and the key services read lives on partitions
+    // of its own, which the phone's table mounts as it starts: the modem's,
+    // what the wireless driver asks for, and the one the wireless chip keeps
+    // its calibration on, which it waits for before it makes an interface.
+    // Mount them here too, so programs started later find what they ask for.
+    // A phone that keeps none, or keeps them elsewhere, is left as it was.
+    for (point, name) in [
+        ("/vendor/firmware_mnt", "firmware_mnt"),
+        ("/vendor/firmware-modem", "firmware-modem"),
+        ("/mnt/vendor/persist", "persist"),
+    ] {
+        let at = Path::new(point);
+        if mount::is_mount_point(at)? {
+            continue;
+        }
+        let Ok(entries) = skyward_block::fstab::read(point) else { continue };
+        let Some(entry) = entries.first() else { continue };
+        let Ok(device) = skyward_block::fstab::device(entry) else { continue };
+        if !Path::new(&device).exists() {
+            continue;
+        }
+        fs::create_dir_all(at).with_context(|| format!("make {}", at.display()))?;
+        // A third-party recovery's policy may not know the context the
+        // phone's table asks for, and the kernel refuses the mount outright
+        // when it does not; the files are read by the recovery's own
+        // programs, which run permissively or as root.
+        let options: Vec<String> = entry.options.iter().filter(|o| !o.starts_with("context=")).cloned().collect();
+        if mount::mount(Path::new(&device), at, &entry.filesystem, &options).is_err() {
+            continue;
+        }
+        mounts.partitions.push(Mounted {
+            partition: name.to_string(),
+            device: PathBuf::from(device),
+            mount_point: at.to_path_buf(),
+            filesystem: entry.filesystem.clone(),
+        });
     }
     Ok(mounts)
 }
