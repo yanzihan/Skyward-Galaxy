@@ -666,6 +666,18 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     skyward_sys::kmsg(&format!("{nodes} device nodes given the owner their phone describes"))?;
     let props = skyward_info::installed_props(slot)?;
     adopt_installed_version(&props)?;
+    // The phone's init carries the build's properties in its property area
+    // before it starts anything, and the recovery starts with its own
+    // alone. The programs it keeps for the phone's keys name their hardware
+    // modules after ro.hardware.<class>, so the ones the build props give
+    // that the recovery has none of are set here, as the phone's init has
+    // them.
+    for (name, value) in &props {
+        if name.starts_with("ro.hardware.") && skyward_sys::prop(name).is_none() {
+            skyward_sys::set_prop(name, value)?;
+            skyward_sys::kmsg(&format!("{name} is {value}, as the phone's build props set it"))?;
+        }
+    }
     // Without logd the phone's own programs still run, and only what they
     // log is lost, so why it did not start goes to the kernel log.
     if let Some(logd) = &cfg.logd
@@ -707,6 +719,13 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     if !hardware.is_empty() {
         secure::prepare_hardware_directory(&hardware)?;
         skyward_sys::kmsg("the directory for the phone's hardware services can run")?;
+        // The directory of the older kind init started read the manifest the
+        // recovery carries, which names none of what the phone registers,
+        // and it keeps what it read. The manifest now carries the phone's,
+        // and init starts it once more, to read one that does.
+        if let Err(e) = skyward_sys::set_prop("ctl.restart", skyward_programs::secure::HARDWARE_DIRECTORY) {
+            skyward_sys::kmsg(&format!("the directory for the phone's hardware services was not started again: {e:#}"))?;
+        }
     }
     // A program that registers with the service directory needs the
     // directory to know the phone describes what it registers, and so does
