@@ -40,8 +40,10 @@ const HOME: &str = "/skyward/run/supplicant";
 const WIFI: u32 = 1010;
 
 /// How long the driver may take to make its interface, the chip's firmware
-/// loading meanwhile.
-const INTERFACE_WAIT: Duration = Duration::from_secs(20);
+/// loading meanwhile. This chip loads its firmware and waits for the
+/// calibration it takes from the modem's partitions before it makes an
+/// interface, which takes the better part of two minutes the first time.
+const INTERFACE_WAIT: Duration = Duration::from_secs(150);
 
 /// How long the supplicant may take to open its control socket.
 const SOCKET_WAIT: Duration = Duration::from_secs(10);
@@ -661,6 +663,12 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
         }
         for path in skyward_modules::load(modules, &cfg.modules)? {
             skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
+        }
+        // A chip the phone's own init sets going with a write, its cold boot
+        // calibration among them, is set going here: the interface comes
+        // only once that is done, and what waits for it waits too.
+        for w in &cfg.writes {
+            fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;
         }
         let until = Instant::now() + INTERFACE_WAIT;
         while !net.exists() {
