@@ -59,7 +59,10 @@ impl Decryptor {
 pub fn with_key_service<T>(work: impl FnOnce(&Service<'_>) -> Result<T>) -> Result<T, String> {
     let done = (|| {
         let (binder, hardware) = (Binder::open()?, Binder::hardware()?);
-        let service = Service::open(&binder, &hardware)?;
+        // A phone without the vendor partition's own driver is reached as it
+        // always was; the newer key service is only found where it is.
+        let vendor = Binder::vendor().ok();
+        let service = Service::open(&binder, vendor.as_ref(), &hardware)?;
         work(&service)
     })();
     done.map_err(|e| format!("{e:#}"))

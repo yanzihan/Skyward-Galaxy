@@ -21,6 +21,10 @@ const DEVICE: &str = "/dev/binder";
 /// and the node inside it.
 const HARDWARE: [&str; 2] = ["/dev/hwbinder", "/dev/binderfs/hwbinder"];
 
+/// The third driver, which the vendor partition's own services talk over:
+/// their directory and the key service the phone keeps with them.
+const VENDOR: &str = "/dev/vndbinder";
+
 /// The layout this crate speaks. The driver refuses a program that knows a
 /// different one.
 const PROTOCOL: i32 = 8;
@@ -93,6 +97,13 @@ impl Binder {
             .find(|p| p.exists())
             .with_context(|| format!("none of {} is here, so no hardware service can be reached", HARDWARE.join(" or ")))?;
         Binder::on(node, None)
+    }
+
+    /// The driver the vendor partition's own services talk over, where its
+    /// directory keeps them: the key service of a phone built for Android 12
+    /// or later is one of them.
+    pub fn vendor() -> Result<Binder> {
+        Binder::on(Path::new(VENDOR), None)
     }
 
     /// An end of the driver that serves `objects` to other programs: an

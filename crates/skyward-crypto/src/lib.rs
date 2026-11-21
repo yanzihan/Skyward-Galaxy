@@ -30,12 +30,21 @@ pub enum Service<'a> {
 #[cfg(target_os = "android")]
 impl<'a> Service<'a> {
     /// Reach the running key service, of the newer kind where the phone has
-    /// one and of the older kind otherwise, or say that none is.
-    pub fn open(binder: &'a skyward_binder::driver::Binder, hardware: &'a skyward_binder::driver::Binder) -> anyhow::Result<Service<'a>> {
-        match keymint::KeyMint::open(binder) {
-            Ok(service) => Ok(Service::KeyMint(service)),
-            Err(_) => Ok(Service::Keymaster(keymaster::Keymaster::open(hardware)?)),
+    /// one and of the older kind otherwise, or say that none is. A vendor
+    /// build for Android 12 or later keeps its newer kind with the vendor
+    /// partition's own service directory, so that driver is asked too, where
+    /// the phone has it: one without it is reached as it always was.
+    pub fn open(
+        binder: &'a skyward_binder::driver::Binder,
+        vendor: Option<&'a skyward_binder::driver::Binder>,
+        hardware: &'a skyward_binder::driver::Binder,
+    ) -> anyhow::Result<Service<'a>> {
+        for at in [Some(binder), vendor].into_iter().flatten() {
+            if let Ok(service) = keymint::KeyMint::open(at) {
+                return Ok(Service::KeyMint(service));
+            }
         }
+        Ok(Service::Keymaster(keymaster::Keymaster::open(hardware)?))
     }
 
     /// Turn a key that only the storage hardware can use into the form it
