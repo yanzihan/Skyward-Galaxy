@@ -496,7 +496,9 @@ fn backup_end(end: backup::End) -> BackupEnd {
         backup::End::Saved(folder) => {
             BackupEnd::Saved(folder.file_name().expect("a backup's folder has a name").to_string_lossy().into_owned())
         }
-        backup::End::Restored { unmade } => BackupEnd::Restored { unmade: unmade.iter().map(|p| p.display().to_string()).collect() },
+        backup::End::Restored { unmade, readonly } => {
+            BackupEnd::Restored { unmade: unmade.iter().map(|p| p.display().to_string()).collect(), readonly }
+        }
         backup::End::Stopped => BackupEnd::Stopped,
         backup::End::Refused(refusal) => BackupEnd::Refused(match refusal {
             backup::Refusal::Room { needed, free } => BackupRefusal::Room { needed, free },
@@ -1446,7 +1448,9 @@ impl<'a> Pages<'a> {
                 self.part_worker = Some(partwork::Worker::start(partwork::Task::Disable { package_size: *package_size })?);
             }
             Work::UnshareBlocks => {
-                let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+                // Snapshots are a thing of A/B updates; a phone without
+                // slots has none to unshare, and asking is harmless.
+                let slot = skyward_vab::booted_slot()?;
                 self.app.part_work_started(PartKind::Unshare, true);
                 self.part_worker = Some(partwork::Worker::start(partwork::Task::Unshare { slot })?);
             }
@@ -2621,14 +2625,16 @@ impl Pages<'_> {
             // A partition that will not mount, or is in use, is the
             // page's to report; the recovery carries on.
             Effect::Mount(base) => {
-                let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+                // A phone that is not A/B keeps one set of partitions, which
+                // read as slot A's.
+                let slot = skyward_vab::booted_slot()?;
                 if let Err(e) = skyward_vab::mount_one(slot, &base) {
                     self.app.mount_failed(MountFailure { mounting: true, base, detail: format!("{e:#}") });
                 }
                 self.app.set_mounts(self.mounts());
             }
             Effect::Unmount(base) => {
-                let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+                let slot = skyward_vab::booted_slot()?;
                 if let Err(e) = skyward_vab::unmount_one(slot, &base) {
                     self.app.mount_failed(MountFailure { mounting: false, base, detail: format!("{e:#}") });
                 }
@@ -2785,7 +2791,7 @@ impl Pages<'_> {
     /// the page's to report, with what to do first.
     fn relabel(&mut self, now: u64) -> Result<()> {
         ensure!(self.relabeler.is_none(), "relabeling is under way already");
-        let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+        let slot = skyward_vab::booted_slot()?;
         match relabel::rule_files(slot) {
             Ok(rules) => {
                 self.relabeler = Some(filework::Worker::start(filework::Task::Relabel { rules })?);
@@ -2891,7 +2897,7 @@ impl Pages<'_> {
     /// boot.
     fn enter_recovery(&mut self) -> Result<()> {
         skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT)?;
-        let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+        let slot = skyward_vab::booted_slot()?;
         crate::prepare(self.cfg, slot)?;
         self.read_at = Instant::now();
         read_details(self.cfg, &mut self.info, &mut self.unread.details)?;

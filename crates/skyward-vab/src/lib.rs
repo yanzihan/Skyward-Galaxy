@@ -80,6 +80,23 @@ pub fn current_slot() -> Result<Option<Slot>> {
     }
 }
 
+/// The slot to read or write: the booted one, and A where the phone has no
+/// slots. Such a phone keeps one set of partitions, and reading it as A
+/// names them as they are.
+pub fn booted_slot() -> Result<Slot> {
+    Ok(current_slot()?.unwrap_or(Slot::A))
+}
+
+/// The name `base`, which is a partition of `slot`, goes by on this phone:
+/// with the slot's suffix where the phone has slots, and bare where it has
+/// none, as a phone that is not A/B names them.
+pub fn partition_name(base: &str, slot: Slot) -> Result<String> {
+    Ok(match current_slot()? {
+        Some(_) => format!("{base}{}", slot.suffix()),
+        None => base.to_string(),
+    })
+}
+
 /// Virtual A/B update phase as libsnapshot records it. Anything but `None`
 /// means dynamic partitions have live snapshots, and writing them would
 /// corrupt the pending update.

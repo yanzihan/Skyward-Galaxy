@@ -2171,15 +2171,27 @@ pub fn backup_job(cx: &Ctx) -> Frame {
         }
         Some(end) => {
             match end {
-                BackupEnd::Restored { unmade } if !unmade.is_empty() => {
-                    let folders = unmade.join(l.pick(["、", "、", ", "]));
-                    let note = tr!(
-                        l,
-                        "以下文件夹所属的用户已不存在，其中的内容未恢复：{folders}",
-                        "以下資料夾所屬的使用者已不存在，其中的內容未還原：{folders}",
-                        "The users these folders belonged to no longer exist, so what they hold wasn't restored: {folders}"
-                    );
-                    y = widgets::footnote(&mut c, t, f, y, &note);
+                BackupEnd::Restored { unmade, readonly } if !unmade.is_empty() || !readonly.is_empty() => {
+                    if !readonly.is_empty() {
+                        let parts = readonly.join(l.pick(["、", "、", ", "]));
+                        let note = tr!(
+                            l,
+                            "本机把这些分区锁为只读，未写回：{parts}",
+                            "本機將這些分割區鎖為唯讀，未寫回：{parts}",
+                            "This phone keeps these partitions read-only, so they were left as they were: {parts}"
+                        );
+                        y = widgets::footnote(&mut c, t, f, y, &note);
+                    }
+                    if !unmade.is_empty() {
+                        let folders = unmade.join(l.pick(["、", "、", ", "]));
+                        let note = tr!(
+                            l,
+                            "以下文件夹所属的用户已不存在，其中的内容未恢复：{folders}",
+                            "以下資料夾所屬的使用者已不存在，其中的內容未還原：{folders}",
+                            "The users these folders belonged to no longer exist, so what they hold wasn't restored: {folders}"
+                        );
+                        y = widgets::footnote(&mut c, t, f, y, &note);
+                    }
                 }
                 BackupEnd::Failed(why) => y = widgets::footnote(&mut c, t, f, y, why),
                 _ => {}

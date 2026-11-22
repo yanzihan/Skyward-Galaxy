@@ -532,7 +532,7 @@ fn main() -> Result<()> {
         }),
         ("107-restore-job-light-done", Screen::BackupJob, false, &|app| {
             let unmade = vec!["/data/user/10".into(), "/data/user_de/10".into(), "/data/misc_ce/10".into()];
-            app.state.backup_job = job(true, plan(), None, Some(BackupEnd::Restored { unmade }))
+            app.state.backup_job = job(true, plan(), None, Some(BackupEnd::Restored { unmade, readonly: Vec::new() }))
         }),
         ("108-restore-job-light-failed", Screen::BackupJob, false, &|app| {
             let at = Some(BackupAt { item: 8, done: 400_000_000, of: 1_405_968_384, checking: false });

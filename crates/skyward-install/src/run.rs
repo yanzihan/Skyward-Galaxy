@@ -465,7 +465,9 @@ fn install_system(ctx: &Context, contents: &skyward_systems::package::Contents) 
     if let Some(other) = skyward_systems::install::state()?.system {
         return refused(Refusal::SystemInstalled(other.name));
     }
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+    // A second system goes into the slot that does not start: a phone that
+    // is not A/B keeps one set of partitions, and holds no second one.
+    let slot = skyward_vab::current_slot()?.context("this phone keeps one system, so there is no second slot to install one into")?;
     let room = skyward_systems::install::room_now(slot)?;
     let sizes = skyward_systems::install::sizes(contents.least(), room);
     if sizes.is_empty() {
@@ -556,7 +558,10 @@ fn describe(package: &Package) -> String {
 }
 
 fn update_system<S>(ctx: &mut Context, mount: &Mount<S>, update: &Update) -> Result<Done> {
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+    // Read as the booted slot, which is A where the phone has none: the
+    // package itself says whether it is for such a phone, and is refused
+    // with that reason rather than a bare one about slots.
+    let slot = skyward_vab::booted_slot()?;
     if let Err(refusal) = package::check(update, &phone(slot)?) {
         return Ok(Done::Decided(Outcome::Refused(refusal)));
     }

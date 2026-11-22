@@ -289,7 +289,9 @@ pub fn map_whole(slot: Slot, base_name: &str, name: &str, readonly: bool) -> Res
     let super_dev = super_device();
     let md = skyward_lp::read(&super_dev, slot.number())?;
     let devices = block_devices(&md, &super_dev)?;
-    let full = format!("{base_name}{}", slot.suffix());
+    // A phone that is not A/B names its partitions bare, and one that is
+    // names them with the slot's suffix.
+    let full = crate::partition_name(base_name, slot)?;
     let p = slot_partitions(&md, slot).into_iter().find(|p| p.name == full).with_context(|| format!("super holds no {full}"))?;
     let device = dm::create(name, &targets(p, &devices), readonly)?;
     Ok(Whole { name: name.into(), device, size: bytes(p) })

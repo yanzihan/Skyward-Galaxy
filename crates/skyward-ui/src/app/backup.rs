@@ -74,7 +74,7 @@ pub enum BackupEnd {
     Saved(String),
     /// A backup restored, but for what it held in the folders of users gone
     /// since, which only the system makes: where those were.
-    Restored { unmade: Vec<String> },
+    Restored { unmade: Vec<String>, readonly: Vec<String> },
     /// Stopped as asked: a backup stopped leaves nothing of itself, and a
     /// restore stops only while nothing is written.
     Stopped,
@@ -355,7 +355,7 @@ mod tests {
         assert!(!stops(&mut app), "what has begun to be written is not stopped");
         app.key(Key::Back, 0);
         assert_eq!(app.screen(), Screen::BackupJob);
-        app.backup_ended(BackupEnd::Restored { unmade: vec!["/data/user/10".into()] }, 0);
+        app.backup_ended(BackupEnd::Restored { unmade: vec!["/data/user/10".into()], readonly: Vec::new() }, 0);
         assert_eq!(tap_at(&mut app, &f, &i, Action::RebootTo(Target::System), 1000), vec![Effect::Reboot(Target::System)]);
     }
 }
