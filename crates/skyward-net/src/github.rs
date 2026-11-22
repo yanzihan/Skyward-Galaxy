@@ -10,6 +10,15 @@ pub const LATEST: &str = "https://api.github.com/repos/yanzihan/Skyward-Galaxy/r
 /// The version of GitHub's API the answer is read as.
 const API_VERSION: &str = "2022-11-28";
 
+/// A release's notes, in the languages the pages speak. A release that
+/// marks none of them has the same lines in each.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Notes {
+    pub hans: Vec<String>,
+    pub hant: Vec<String>,
+    pub en: Vec<String>,
+}
+
 /// The newest release, as the build of Skyward that asked sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Newest {
@@ -19,9 +28,10 @@ pub struct Newest {
     pub newer: bool,
     /// Its zip for the phone; none when it has none.
     pub build: Option<Build>,
-    /// What the release says of itself, a line each: the newest build's
-    /// changes, as whoever made it wrote them.
-    pub notes: Vec<String>,
+    /// What the release says of itself, a line each in the language it is
+    /// written in: the newest build's changes, as whoever made it wrote
+    /// them.
+    pub notes: Notes,
     /// The day it was published, as 2026-11-23.
     pub published: Option<String>,
 }
@@ -81,17 +91,56 @@ struct Message {
 /// The newest release that `answer`, GitHub's answer at [`LATEST`], tells
 /// of, and its zip for the phone `codename` names, as the build of version
 /// `running` sees it.
-/// The lines a release's notes show: its text, one line each, without a
-/// heading naming the version, up to as many as the page shows.
-fn notes(body: Option<&str>) -> Vec<String> {
+/// The lines a release's notes show in each language: its text, one line
+/// each, without the heading naming the language or the version, up to as
+/// many as the page shows. A body that names no language is read whole,
+/// the same lines in each.
+fn notes(body: Option<&str>) -> Notes {
     const SHOWN: usize = 12;
-    let Some(body) = body else { return Vec::new() };
-    body.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with("0.") && !line.ends_with("更新:"))
-        .take(SHOWN)
-        .map(str::to_string)
-        .collect()
+    let Some(body) = body else { return Notes::default() };
+    let shown = |lines: &mut dyn Iterator<Item = &str>| -> Vec<String> {
+        lines
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with("0.") && !line.ends_with("更新:"))
+            .take(SHOWN)
+            .map(str::to_string)
+            .collect()
+    };
+    let mut sections: Vec<(Option<&str>, Vec<&str>)> = vec![(None, Vec::new())];
+    for line in body.lines() {
+        let trimmed = line.trim();
+        let named = trimmed.strip_prefix("##").map(str::trim);
+        match named {
+            Some(tag) => sections.push((Some(tag), Vec::new())),
+            None => sections.last_mut().expect("a section is open").1.push(line),
+        }
+    }
+    let mut out = Notes::default();
+    for (tag, lines) in sections {
+        let lines = shown(&mut lines.into_iter());
+        match tag {
+            Some("zh-Hans") => out.hans = lines,
+            Some("zh-Hant") => out.hant = lines,
+            Some("en") => out.en = lines,
+            // The text before any heading, or under one that names none of
+            // the pages' languages.
+            _ if !lines.is_empty() && out.hans.is_empty() && out.hant.is_empty() && out.en.is_empty() => {
+                out.hans = lines.clone();
+                out.hant = lines.clone();
+                out.en = lines;
+            }
+            _ => {}
+        }
+    }
+    if out.hans.is_empty() && out.hant.is_empty() && out.en.is_empty() {
+        // Headings of other names: the whole body as one.
+        let mut all = body.lines();
+        let lines = shown(&mut all);
+        out.hans = lines.clone();
+        out.hant = lines.clone();
+        out.en = lines;
+    }
+    out
 }
 
 /// The day a release's timestamp names: the first ten letters of

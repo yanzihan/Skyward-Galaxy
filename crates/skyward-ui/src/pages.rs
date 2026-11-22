@@ -2728,11 +2728,18 @@ fn skyward_online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
         Some(day) => widgets::footnote(c, t, f, y, &tr!(l, "发布于 {day}", "發佈於 {day}", "Published {day}")),
         None => y,
     };
-    let y = if newest.notes.is_empty() {
+    let notes = match l {
+        Lang::Hans => &newest.notes.hans,
+        Lang::Hant => &newest.notes.hant,
+        Lang::En => &newest.notes.en,
+    };
+    // A language the release says nothing in reads the English it has.
+    let notes = if notes.is_empty() { &newest.notes.en } else { notes };
+    let y = if notes.is_empty() {
         y
     } else {
         let mut at = y;
-        for line in &newest.notes {
+        for line in notes {
             at = widgets::footnote(c, t, f, at, line);
         }
         at

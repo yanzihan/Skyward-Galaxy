@@ -187,7 +187,7 @@ fn main() -> Result<()> {
             let mut newest = skyward_newest();
             newest.version = "0.4.2".into();
             newest.published = Some("2026-11-23".into());
-            newest.notes = [
+            let lines: Vec<String> = [
                 "-新增：安装页可直接刷写 super 内的单个逻辑分区（system、vendor、product、odm）",
                 "-新增：安装页可直接刷写整个 super 镜像，写入前校验尺寸",
                 "-新增：支持 Android sparse 镜像，写入时自动解码",
@@ -198,6 +198,7 @@ fn main() -> Result<()> {
             .iter()
             .map(|line| line.to_string())
             .collect();
+            newest.notes = skyward_net::github::Notes { hans: lines.clone(), hant: lines.clone(), en: lines };
             for dark in [false, true] {
                 let mut app = App::new(Screen::SkywardUpdate, w, h, ppd);
                 app.state.lang = lang;
@@ -1452,7 +1453,7 @@ fn skyward_newest() -> Newest {
             size: 43_145_196,
             sha256: "9f6165079529418d8f6635beddfdd9abf9a70c89d69eb467a9922b0db69bfaf1".into(),
         }),
-        notes: Vec::new(),
+        notes: Default::default(),
         published: None,
     }
 }
