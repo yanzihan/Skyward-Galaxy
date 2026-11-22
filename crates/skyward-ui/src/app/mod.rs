@@ -801,12 +801,11 @@ impl Ease {
     }
 }
 
-/// The charging screen: when the cable went in, how far it shows over the
-/// page, and whether the panel was dark then and goes dark again after.
+/// The charging screen: when the cable went in, and how far it shows over
+/// the page.
 struct Charging {
     since: u64,
     shown: Fade,
-    dark_after: bool,
 }
 
 /// A part of the screen fading in or out: where it is headed, since when,
@@ -1413,15 +1412,11 @@ impl App {
                 self.bright.set(false, now);
             }
         }
-        // The charging screen goes once it has shown long enough: on a
-        // panel lit for it, with the panel, else for the page.
+        // The charging screen goes once it has shown long enough, for the
+        // page or the lock screen it came over.
         if self.display_on && self.charging.as_ref().is_some_and(|c| c.shown.on && now >= c.since + CHARGE_MS) {
             let c = self.charging.as_mut().expect("the charging screen shows");
-            if c.dark_after {
-                self.sleep(now);
-            } else {
-                c.shown.set(false, now);
-            }
+            c.shown.set(false, now);
         }
         if self.charging.as_ref().is_some_and(|c| !c.shown.on && !c.shown.moving(now)) {
             self.end_charging();

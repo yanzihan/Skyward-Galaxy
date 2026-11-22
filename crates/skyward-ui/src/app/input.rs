@@ -25,6 +25,15 @@ impl App {
             }
             return Vec::new();
         }
+        // A finger on the charging screen sends it away for the page or the
+        // lock screen behind it, and does nothing else until it lifts.
+        if self.charge_shown() {
+            if matches!(ev, Touch::Down(..)) {
+                self.dismiss_charging(now);
+                self.drag = Drag::Waking;
+            }
+            return Vec::new();
+        }
         // The lock screen takes the finger that takes it away, and nothing
         // else; the tap that lit the panel lifts too, and only keeps it lit.
         // The bar's knob follows the finger, and past most of the way the
@@ -58,15 +67,6 @@ impl App {
                     }
                     self.dirty = true;
                 }
-            }
-            return Vec::new();
-        }
-        // A finger on the charging screen sends it away for the page, and
-        // does nothing else until it lifts.
-        if self.charge_shown() {
-            if matches!(ev, Touch::Down(..)) {
-                self.dismiss_charging(now);
-                self.drag = Drag::Waking;
             }
             return Vec::new();
         }

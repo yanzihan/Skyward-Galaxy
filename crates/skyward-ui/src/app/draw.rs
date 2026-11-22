@@ -178,14 +178,16 @@ impl App {
                 self.glass = None;
             }
         }
-        if charge > 0.0 {
-            self.compose_charging(out, f, info, charge, now);
-        }
         // A panel lit by a key or a tap shows the lock screen over what the
         // page showed, kept small and soft behind it.
         if self.locked {
             let day = self.today.clone();
             self.compose_glass(out, f, info, clock, &day);
+        }
+        // The charging screen goes over both: a cable going in on a dark
+        // panel lights it over the lock screen, which stays once it is gone.
+        if charge > 0.0 {
+            self.compose_charging(out, f, info, charge, now);
         }
         out.dim(self.curtain.level(now));
     }
