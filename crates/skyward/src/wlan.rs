@@ -430,6 +430,31 @@ impl Station {
         }
         self.state.networks = wlan::networks(&found);
         r.found = found;
+        // A network the supplicant could not find a few times is dropped by
+        // it, and once every one it holds is down it sits doing nothing even
+        // after a scan has seen one again. A saved network a scan has seen
+        // is brought back, and left to the supplicant to join.
+        if self.state.joined.is_some() {
+            let dropped: Vec<u32> = match r.control.ask("LIST_NETWORKS") {
+                Ok(who) => who
+                    .lines()
+                    .filter(|line| line.contains("DISABLED"))
+                    .filter(|line| {
+                        let ssid = line.split('\t').nth(1).unwrap_or("");
+                        r.found.iter().any(|b| String::from_utf8_lossy(&b.ssid) == ssid)
+                    })
+                    .filter_map(|line| line.split('\t').next().and_then(|id| id.parse::<u32>().ok()))
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
+            for id in dropped {
+                if let Err(e) = r.control.order(&format!("ENABLE_NETWORK {id}")) {
+                    let _ = skyward_sys::kmsg(&format!("the saved network {id} was not brought back: {e:#}"));
+                } else {
+                    skyward_sys::kmsg(&format!("the saved network {id} is brought back, its access point seen"))?;
+                }
+            }
+        }
         Ok(())
     }
 

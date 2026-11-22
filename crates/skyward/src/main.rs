@@ -234,6 +234,10 @@ enum Cmd {
     /// the phone's own wrapped keys need of them.
     #[cfg(target_os = "android")]
     Gcm,
+    /// Ask the running supplicant what networks it holds, how it stands and
+    /// what its last scan saw.
+    #[cfg(target_os = "android")]
+    WlanStatus,
     /// Say what the phone's weaver says of itself, which reads no slot and
     /// changes nothing.
     #[cfg(target_os = "android")]
@@ -491,6 +495,22 @@ fn main() -> Result<()> {
                     Err(e) => println!("the round trip came apart: {e:#}"),
                 },
                 _ => println!("the phone's key service is of the older kind, which the round trip is not a matter of"),
+            }
+            Ok(())
+        }
+        #[cfg(target_os = "android")]
+        Cmd::WlanStatus => {
+            let cfg = DeviceConfig::load("/skyward/device.toml")?;
+            let interface = cfg.wlan.as_ref().map(|w| w.interface.clone()).context("the configuration brings no WLAN")?;
+            let socket = std::path::Path::new("/skyward/run/supplicant/sockets").join(interface);
+            let control = skyward_net::supplicant::Control::open(&socket).context("reach the supplicant's control socket")?;
+            for (what, command) in [("networks held", "LIST_NETWORKS"), ("how it stands", "STATUS"), ("what the last scan saw", "SCAN_RESULTS")] {
+                println!("---- {what}");
+                match control.ask(command) {
+                    Ok(answer) => print!("{}", answer.trim_end()),
+                    Err(e) => println!("the supplicant answers nothing about them: {e:#}"),
+                }
+                println!();
             }
             Ok(())
         }
