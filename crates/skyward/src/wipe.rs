@@ -500,6 +500,24 @@ fn forget_cache_inodes(folders: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
+/// Make the folder a cache partition mounts at. A phone that mounts no
+/// cache of its own points /cache into its data partition's folder, which a
+/// data partition taken away leaves pointing at nothing: the folder is made
+/// where the link points, and the partition mounts through the link as it
+/// did.
+fn make_cache_dir(at: &Path) -> Result<()> {
+    match fs::read_link(at) {
+        Ok(target) => {
+            let target = match target.is_absolute() {
+                true => target,
+                false => at.parent().unwrap_or(Path::new("/")).join(target),
+            };
+            fs::create_dir_all(&target).with_context(|| format!("make {}", target.display()))
+        }
+        Err(_) => fs::create_dir_all(at).with_context(|| format!("make {}", at.display())),
+    }
+}
+
 /// The cache partition, where the phone has one.
 pub fn cache() -> Result<Option<Entry>> {
     Ok(fstab::read(CACHE)?.into_iter().next())
@@ -703,20 +721,7 @@ pub fn remake_cache(entry: &Entry, filesystem: &str) -> Result<()> {
     let kept = read_logs(&device, at)?;
     remake(entry, filesystem)?;
     let Some((folder, logs)) = kept else { return Ok(()) };
-    // A phone that mounts no cache of its own points /cache into its data
-    // partition's folder, which a data partition taken away leaves pointing
-    // at nothing; the folder is made where the link points, and the
-    // partition mounts through the link as it did.
-    match fs::read_link(at) {
-        Ok(target) => {
-            let target = match target.is_absolute() {
-                true => target,
-                false => at.parent().unwrap_or(Path::new("/")).join(target),
-            };
-            fs::create_dir_all(&target).with_context(|| format!("make {}", target.display()))?;
-        }
-        Err(_) => fs::create_dir_all(at).with_context(|| format!("make {}", at.display()))?,
-    }
+    make_cache_dir(at)?;
     // The table's options are for the filesystem it names.
     let options: &[String] = if filesystem == entry.filesystem { &entry.options } else { &[] };
     mount::mount(&device, at, filesystem, options)?;
@@ -743,7 +748,7 @@ fn read_logs(device: &Path, at: &Path) -> Result<Option<(Look, Vec<Log>)>> {
     if mount::is_mount_point(at)? {
         mount::umount(at)?;
     }
-    fs::create_dir_all(at).with_context(|| format!("make {}", at.display()))?;
+    make_cache_dir(at)?;
     if let Err(e) = mount::mount_ro(device, at) {
         skyward_sys::kmsg(&format!("{} does not mount, so it keeps no logs: {e:#}", device.display()))?;
         return Ok(None);
