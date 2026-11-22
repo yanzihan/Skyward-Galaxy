@@ -180,19 +180,21 @@ pub fn super_partitions<R: Read>(image: &mut R, len: u64) -> Result<Vec<String>>
     image.read_exact(&mut header).context("read the header of super's metadata")?;
     let magic = u32::from_le_bytes(header[0..4].try_into().expect("four bytes"));
     ensure!(magic == LP_HEADER_MAGIC, "super's metadata header starts {magic:#x}");
-    // The header: magic, major, minor, header_size, then the tables' sizes,
-    // then the partition and extent entries at 80 and after.
+    // The header: magic, the version, the header's size and checksum, then
+    // the size and checksum of the tables, then their place and count: the
+    // partitions' first, then the extents', the groups' and the block
+    // devices', each with where it starts, how many entries and how long
+    // each is.
     let header_size = u32::from_le_bytes(header[8..12].try_into().expect("four bytes")) as usize;
     ensure!(header_size >= 80 && header_size <= header.len(), "super's metadata header is {header_size} bytes");
-    let count = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().expect("four bytes")) as usize;
-    let (partitions, extents, groups, block_devices) = (count(44), count(48), count(52), count(56));
-    ensure!(partitions < 4096 && extents < 65536 && groups < 4096 && block_devices < 256, "super's metadata names {partitions} partitions");
-    let entry = 52;
-    let end = 80 + partitions * entry;
-    ensure!(end <= header.len(), "super's metadata has {partitions} partitions where its header holds {}", header.len());
+    let field = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().expect("four bytes")) as usize;
+    let (first, partitions, entry) = (field(24), field(28), field(32));
+    ensure!(partitions < 4096 && (36..=256).contains(&entry), "super's metadata names {partitions} partitions of {entry} bytes");
+    let end = first.checked_add(partitions.saturating_mul(entry)).context("super's partition table has no end")?;
+    ensure!(end <= header.len(), "super's partition table ends at {end}, past the {} bytes its header holds", header.len());
     let mut out = Vec::with_capacity(partitions);
     for i in 0..partitions {
-        let at = 80 + i * entry;
+        let at = first + i * entry;
         let raw = &header[at..at + entry];
         let name = raw[0..36].split(|b| *b == 0).next().unwrap_or(&[]);
         let name = String::from_utf8_lossy(name).into_owned();
@@ -820,7 +822,9 @@ mod tests {
         let header = 4096;
         image[header..header + 4].copy_from_slice(&LP_HEADER_MAGIC.to_le_bytes());
         image[header + 8..header + 12].copy_from_slice(&80u32.to_le_bytes()); // header size
-        image[header + 44..header + 48].copy_from_slice(&2u32.to_le_bytes()); // partitions
+        image[header + 24..header + 28].copy_from_slice(&80u32.to_le_bytes()); // partitions' place
+        image[header + 28..header + 32].copy_from_slice(&2u32.to_le_bytes()); // how many
+        image[header + 32..header + 36].copy_from_slice(&52u32.to_le_bytes()); // each length
         for (i, name) in ["system", "vendor_a"].iter().enumerate() {
             let at = header + 80 + i * 52;
             image[at..at + name.len()].copy_from_slice(name.as_bytes());
