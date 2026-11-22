@@ -168,6 +168,15 @@ impl App {
         let charge = self.charging.as_ref().map_or(0.0, |c| c.shown.level(now));
         if charge < 1.0 {
             self.compose_page(out, f, info, clock, now);
+            // Kept while no lock stands over the page, one pixel in
+            // `LOCK_STEP` of each way: the lock's picture behind itself.
+            // Taken before the charging screen goes on, so that the lock
+            // screen woken later is made of the page, never of a cable's
+            // charging screen left under a dark panel.
+            if !self.locked && self.display_on {
+                self.behind = Some(out.thumbnail(LOCK_STEP));
+                self.glass = None;
+            }
         }
         if charge > 0.0 {
             self.compose_charging(out, f, info, charge, now);
@@ -177,11 +186,6 @@ impl App {
         if self.locked {
             let day = self.today.clone();
             self.compose_glass(out, f, info, clock, &day);
-        } else if self.display_on {
-            // Kept while no lock stands over the page, one pixel in
-            // `LOCK_STEP` of each way: the lock's picture behind itself.
-            self.behind = Some(out.thumbnail(LOCK_STEP));
-            self.glass = None;
         }
         out.dim(self.curtain.level(now));
     }
