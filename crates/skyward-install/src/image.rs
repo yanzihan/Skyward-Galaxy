@@ -791,8 +791,7 @@ mod tests {
             out
         };
         sparse.extend_from_slice(&chunk(0xcac1, 2, 12 + 8));
-        let mut raw_chunk = vec![0u8; 8].to_vec();
-        raw_chunk.copy_from_slice(&raw);
+        let raw_chunk = raw;
         sparse.extend_from_slice(&raw_chunk);
         sparse.extend_from_slice(&chunk(0xcac4, 0, 16));
         sparse.extend_from_slice(&0u32.to_le_bytes()); // crc
