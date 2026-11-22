@@ -1200,6 +1200,7 @@ impl<'a> Pages<'a> {
     /// Bring up the panel, the touchscreen and the pages, as the settings
     /// kept from the starts before leave them, with none of the work the
     /// request asks for started yet.
+    #[allow(clippy::too_many_arguments)]
     fn open(cfg: &'a DeviceConfig, programs: &'a [Service], font: &Path, mono: &Path, request: bcb::Request, start: Screen, dump: Option<&'a Path>, panel: Option<KmsSurface>) -> Result<Pages<'a>> {
         if cfg.display.density == 0 {
             return Err(anyhow!("{}: [display] density is required to lay out the UI", cfg.device.codename));
