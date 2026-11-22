@@ -13,6 +13,8 @@ os_version_prop = "ro.build.display.id"
 # Skyward 不跑 TWRP 界面;p3q 的 recovery 分区只有 78MB,要放下未修改的全量
 # MiSans 字体,就得让这些用不上的文件腾出位置。
 drop = ["twres/fonts/wqy-microhei.ttf"]
+# 开机动画与首次启动的界面语言;设置里改过语言后以设置为准
+lang = "zh-CN"
 
 [display]
 width = 1440
