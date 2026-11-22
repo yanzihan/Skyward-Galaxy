@@ -2722,6 +2722,21 @@ fn skyward_online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
         ),
     };
     let y = widgets::list(c, t, f, y, &[Row::new(&title).icon(GREEN, Icon::Install).subtitle(&detail).trail(Trail::None)]).bottom;
+    // The day the release came out, and what it says of itself a line each,
+    // so that whoever looks at the new version sees what it changes.
+    let y = match &newest.published {
+        Some(day) => widgets::footnote(c, t, f, y, &tr!(l, "发布于 {day}", "發佈於 {day}", "Published {day}")),
+        None => y,
+    };
+    let y = if newest.notes.is_empty() {
+        y
+    } else {
+        let mut at = y;
+        for line in &newest.notes {
+            at = widgets::footnote(c, t, f, at, line);
+        }
+        at
+    };
     if !newest.newer || newest.build.is_none() {
         // An answer stands until it is asked for again: GitHub may have a
         // newer release since, and the page offers the asking.

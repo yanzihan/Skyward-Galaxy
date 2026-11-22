@@ -45,6 +45,8 @@ const LP_HEADER_MAGIC: u32 = 0x414c_5030;
 /// place each keeps it: ext4 at 0x438, f2fs at 0x400.
 const EXT4_MAGIC: [u8; 2] = [0x53, 0xef];
 const F2FS_MAGIC: [u8; 4] = [0x10, 0x20, 0xf5, 0xf2];
+/// EROFS keeps its magic at the same place f2fs keeps its own.
+const EROFS_MAGIC: [u8; 4] = [0xe2, 0xe1, 0xf5, 0xe0];
 const EXT4_MAGIC_AT: usize = 0x438;
 const F2FS_MAGIC_AT: usize = 0x400;
 
@@ -145,6 +147,11 @@ fn classified(head: &[u8]) -> Option<ImageKind> {
         return Some(ImageKind::Logical);
     }
     if head.len() >= F2FS_MAGIC_AT + 4 && head[F2FS_MAGIC_AT..F2FS_MAGIC_AT + 4] == F2FS_MAGIC {
+        return Some(ImageKind::Logical);
+    }
+    // Samsung keeps some partitions EROFS, whose magic stands where f2fs
+    // keeps its own.
+    if head.len() >= F2FS_MAGIC_AT + 4 && head[F2FS_MAGIC_AT..F2FS_MAGIC_AT + 4] == EROFS_MAGIC {
         return Some(ImageKind::Logical);
     }
     None

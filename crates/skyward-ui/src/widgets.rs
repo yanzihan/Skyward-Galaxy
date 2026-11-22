@@ -125,6 +125,23 @@ fn chevron(c: &mut Canvas, t: &Theme, right: f32, cy: f32, color: Rgba) {
     c.line(x1, cy, x0, cy + h / 2.0 - sw / 2.0, sw, color);
 }
 
+/// Let what is drawn between `x0` and `x1` fade into `color` towards `x1`,
+/// over the rows `top` to `bottom`: the tail of a line too long to show
+/// whole.
+fn fade_right(c: &mut Canvas, x0: f32, x1: f32, top: f32, bottom: f32, color: Rgba) {
+    let span = (x1 - x0).max(1.0);
+    let mut x = x0 as i32;
+    while (x as f32) < x1 {
+        let cov = ((x as f32 - x0) / span).clamp(0.0, 1.0);
+        let mut y = top as i32;
+        while (y as f32) < bottom {
+            c.blend(x, y, color, cov);
+            y += 1;
+        }
+        x += 1;
+    }
+}
+
 /// Punctuation that never starts a line; at the end of a full line it hangs
 /// past the edge instead.
 const NO_LINE_START: &str = "，。、；：！？）」』》%,.;:!?)]>”";
@@ -1680,7 +1697,23 @@ pub fn device_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, 
     let block = (tb - tt) + m.sub_gap + (sb - st);
     let ink_top = cy - block / 2.0;
     c.text_top(&f.heading, title, tx, ink_top, m.account_title_px, t.pal.text, None);
-    c.text_top(&f.body, sub, tx, ink_top + (tb - tt) + m.sub_gap, m.sub_px, t.pal.subtitle, None);
+    // A subtitle longer than the card holds does not run under the chevron:
+    // what is past the room for it fades into the card.
+    let sub_top = ink_top + (tb - tt) + m.sub_gap;
+    let chevron_left = right - m.chevron_inset - m.chevron_w;
+    // The line is held to the card's own edge, and what is past the room
+    // the chevron leaves fades into the card, up to its edge.
+    c.text_top(&f.body, sub, tx, sub_top, m.sub_px, t.pal.subtitle, Some(right - tx));
+    let width = c.text_width(&f.body, sub, m.sub_px);
+    if tx + width > chevron_left - m.icon_gap {
+        // The line fades out well before the chevron and is the card's
+        // colour from the room the chevron leaves on, so the arrow stands
+        // clear of it.
+        let solid = chevron_left - m.icon_gap - 8.0;
+        let from = (solid - 160.0).max(tx);
+        fade_right(c, from, solid, sub_top, sub_top + (sb - st), t.pal.card);
+        c.fill_rect(solid, sub_top, right - solid, sb - st, t.pal.card);
+    }
     chevron(c, t, right - m.chevron_inset, cy, t.pal.chevron);
 
     let tone = Tone::page(t);

@@ -159,6 +159,58 @@ fn main() -> Result<()> {
             let probes = args.get(3).ok_or_else(|| anyhow!("--match needs a probe file"))?;
             return matcher::run(&fonts, Path::new(probes));
         }
+        // The home page as a phone with a long build number shows it, whose
+        // subtitle fades before the chevron.
+        Some("--home-long") => {
+            let b4q = DeviceConfig::load(root.join("devices/b4q.toml"))?;
+            let (w, h) = (b4q.display.width, b4q.display.height);
+            let ppd = b4q.display.density as f32 / 160.0;
+            let mut info = p3q(&b4q);
+            info.model = "Galaxy Z Flip4 5G".into();
+            info.codename = "b4q".into();
+            info.os_version = Some("BP2A.250605.031.A3.F7210ZSSAIZH2".into());
+            for dark in [false, true] {
+                let mut app = App::new(Screen::Home, w, h, ppd);
+                app.state.lang = lang;
+                app.state.dark = dark;
+                app.state.data = Data::Open;
+                let name = if dark { "home-long-dark.png" } else { "home-long-light.png" };
+                let path = out.join(name);
+                write_png(&path, &whole_page(&mut app, &fonts, &info))?;
+                println!("wrote {}", path.display());
+            }
+            return Ok(());
+        }
+        // What the update page shows of a newer release: its day, and the
+        // changes whoever made it wrote.
+        Some("--skyward-notes") => {
+            let mut newest = skyward_newest();
+            newest.version = "0.4.2".into();
+            newest.published = Some("2026-11-23".into());
+            newest.notes = [
+                "-新增：安装页可直接刷写 super 内的单个逻辑分区（system、vendor、product、odm）",
+                "-新增：安装页可直接刷写整个 super 镜像，写入前校验尺寸",
+                "-新增：支持 Android sparse 镜像，写入时自动解码",
+                "-修复：安装页不认 EROFS 格式的分区镜像",
+                "-修复：开启 WLAN 时偶发读取被信号打断而失败",
+                "-修复：挂载页在非 A/B 机型上挂载与卸载失败",
+            ]
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+            for dark in [false, true] {
+                let mut app = App::new(Screen::SkywardUpdate, w, h, ppd);
+                app.state.lang = lang;
+                app.state.dark = dark;
+                app.state.data = Data::Open;
+                app.skyward_checked(Ok(newest.clone()));
+                let name = if dark { "skyward-notes-dark.png" } else { "skyward-notes-light.png" };
+                let path = out.join(name);
+                write_png(&path, &whole_page(&mut app, &fonts, &p3q(&cfg)))?;
+                println!("wrote {}", path.display());
+            }
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -1400,6 +1452,8 @@ fn skyward_newest() -> Newest {
             size: 43_145_196,
             sha256: "9f6165079529418d8f6635beddfdd9abf9a70c89d69eb467a9922b0db69bfaf1".into(),
         }),
+        notes: Vec::new(),
+        published: None,
     }
 }
 

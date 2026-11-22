@@ -19,6 +19,11 @@ pub struct Newest {
     pub newer: bool,
     /// Its zip for the phone; none when it has none.
     pub build: Option<Build>,
+    /// What the release says of itself, a line each: the newest build's
+    /// changes, as whoever made it wrote them.
+    pub notes: Vec<String>,
+    /// The day it was published, as 2026-11-23.
+    pub published: Option<String>,
 }
 
 /// A phone's zip in a release, which holds Skyward's image for the phone.
@@ -49,6 +54,10 @@ impl Build {
 #[derive(Deserialize)]
 struct Release {
     tag_name: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
     assets: Vec<Asset>,
 }
 
@@ -72,6 +81,29 @@ struct Message {
 /// The newest release that `answer`, GitHub's answer at [`LATEST`], tells
 /// of, and its zip for the phone `codename` names, as the build of version
 /// `running` sees it.
+/// The lines a release's notes show: its text, one line each, without a
+/// heading naming the version, up to as many as the page shows.
+fn notes(body: Option<&str>) -> Vec<String> {
+    const SHOWN: usize = 12;
+    let Some(body) = body else { return Vec::new() };
+    body.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with("0.") && !line.ends_with("更新:"))
+        .take(SHOWN)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The day a release's timestamp names: the first ten letters of
+/// `2026-11-23T08:00:00Z`, where they read as a day.
+fn day(stamp: &str) -> Option<String> {
+    let day = stamp.get(..10)?;
+    let mut parts = day.split('-');
+    let (Some(year), Some(month), Some(date), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else { return None };
+    (year.len() == 4 && month.len() == 2 && date.len() == 2 && year.bytes().chain(month.bytes()).chain(date.bytes()).all(|b| b.is_ascii_digit()))
+        .then(|| day.to_string())
+}
+
 pub fn newest(answer: &str, codename: &str, running: &str) -> Result<Newest> {
     let release: Release = serde_json::from_str(answer).context("read GitHub's answer")?;
     let tag = release.tag_name;
@@ -89,7 +121,8 @@ pub fn newest(answer: &str, codename: &str, running: &str) -> Result<Newest> {
             Some(Build { sha256: sha256.to_lowercase(), name: a.name, url: a.url, link: a.browser_download_url, size: a.size })
         }
     };
-    Ok(Newest { version: version.to_string(), newer: newest > this, build })
+    let published = release.published_at.as_deref().and_then(day);
+    Ok(Newest { version: version.to_string(), newer: newest > this, build, notes: notes(release.body.as_deref()), published })
 }
 
 /// Ask GitHub for Skyward's newest release, and its zip for the phone
