@@ -524,7 +524,7 @@ pub fn about(cx: &Ctx) -> Frame {
     let canvas = fit(c, t, bottom);
     let art = HeroArt {
         wordmark: widgets::wordmark(t, f, "Skyward-Galaxy", m.dp(233.7), m.dp(37.8)),
-        version: widgets::version_line(t, f, ""),
+        version: widgets::version_line(t, f, &format!("v{VERSION}")),
         author: widgets::author_line(t, f, ""),
         runs: canvas.runs(),
     };

@@ -159,6 +159,34 @@ fn main() -> Result<()> {
             let probes = args.get(3).ok_or_else(|| anyhow!("--match needs a probe file"))?;
             return matcher::run(&fonts, Path::new(probes));
         }
+        // The About page's field with the version under the wordmark.
+        Some("--about-hero") => {
+            let b4q = DeviceConfig::load(root.join("devices/b4q.toml"))?;
+            let (w, h) = (b4q.display.width, b4q.display.height);
+            let ppd = b4q.display.density as f32 / 160.0;
+            let mut info = p3q(&b4q);
+            info.model = "Galaxy Z Flip4 5G".into();
+            info.codename = "b4q".into();
+            for dark in [false, true] {
+                let mut app = App::new(Screen::About, w, h, ppd);
+                app.set_screen_corners(b4q.display.corner_radius as f32);
+                app.state.lang = lang;
+                app.state.dark = dark;
+                app.frame(&fonts, &info);
+                app.tick(0);
+                for ms in (0..2000).step_by(16) {
+                    app.tick(ms);
+                }
+                app.tick(2000);
+                let mut c = Canvas::new(w, h);
+                app.compose(&mut c, &fonts, &info, CLOCK, 2000);
+                let name = if dark { "about-hero-dark.png" } else { "about-hero-light.png" };
+                let path = out.join(name);
+                write_png(&path, &c)?;
+                println!("wrote {}", path.display());
+            }
+            return Ok(());
+        }
         // The home page as a phone with a long build number shows it, whose
         // subtitle fades before the chevron.
         Some("--home-long") => {
