@@ -15,6 +15,7 @@ scripts/*
 !scripts/build-model.sh
 !scripts/build-p3q.sh
 !scripts/build-y2q.sh
+!scripts/build-b4q.sh
 !scripts/build-aarch64.sh
 !scripts/subset-font.py
 .idea/
