@@ -276,7 +276,18 @@ mod control {
             self.socket.send(command.as_bytes()).with_context(|| format!("send {}", first_word(command)))?;
             let mut buf = vec![0u8; MESSAGE_MAX];
             loop {
-                let n = self.socket.recv(&mut buf).with_context(|| format!("wait for the answer to {}", first_word(command)))?;
+                // A signal that comes while the answer is waited for
+                // interrupts the wait, and the answer may still come: the
+                // wait goes on. One that runs out is the supplicant's own
+                // silence.
+                let n = match self.socket.recv(&mut buf) {
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        bail!("the supplicant did not answer {} in {} seconds", first_word(command), ANSWER_TIMEOUT.as_secs())
+                    }
+                    Err(e) => return Err(e).with_context(|| format!("wait for the answer to {}", first_word(command))),
+                };
                 let answer = String::from_utf8_lossy(&buf[..n]).into_owned();
                 if !answer.starts_with('<') {
                     return Ok(answer);
