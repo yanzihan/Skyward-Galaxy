@@ -2258,9 +2258,12 @@ pub fn author_line(t: &Theme, f: &Fonts, text: &str) -> Sprite {
 /// the version's place.
 fn hero_line(t: &Theme, f: &Fonts, text: &str, below: f32) -> Sprite {
     let m = &t.m;
-    let px = m.dp(13.3);
-    let w = Canvas::new(0, 0).text_width(&f.body, text, px);
-    let base = m.dp(296.3) + f.body.cap(px) + below;
+    let px = m.dp(14.2);
+    // The type the lock screen's time is in: at this size the body's own
+    // comes out thinner than the wordmark above it.
+    let face = &f.display;
+    let w = Canvas::new(0, 0).text_width(face, text, px);
+    let base = m.dp(296.3) + face.cap(px) + below;
     let (left, top) = ((m.w as f32 - w) / 2.0 - m.dp(2.0), base - px * 1.2);
     Sprite::capture(left, top, (w + m.dp(4.0)).ceil() as u32, (px * 1.6).ceil() as u32, |c, dx, dy| {
         c.text(&f.body, text, (m.w as f32 - w) / 2.0 + dx, base + dy, px, Rgba::rgb(0, 0, 0), None);
