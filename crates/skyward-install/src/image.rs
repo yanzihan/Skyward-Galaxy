@@ -35,6 +35,19 @@ const FOOTER_LEN: u64 = 64;
 
 const CHUNK: usize = 1 << 20;
 
+/// An Android sparse image starts with this, little-endian.
+const SPARSE_MAGIC: [u8; 4] = [0x3a, 0xff, 0x26, 0xed];
+/// A super partition's metadata geometry starts with this, and the header
+/// that follows the geometry carries the partitions, both little-endian.
+const LP_GEOMETRY_MAGIC: u32 = 0x616c_4470;
+const LP_HEADER_MAGIC: u32 = 0x414c_5030;
+/// The magic of the filesystems a logical partition's image holds, at the
+/// place each keeps it: ext4 at 0x438, f2fs at 0x400.
+const EXT4_MAGIC: [u8; 2] = [0x53, 0xef];
+const F2FS_MAGIC: [u8; 4] = [0x10, 0x20, 0xf5, 0xf2];
+const EXT4_MAGIC_AT: usize = 0x438;
+const F2FS_MAGIC_AT: usize = 0x400;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageKind {
     /// A boot image; what it carries decides where it can go.
@@ -42,6 +55,10 @@ pub enum ImageKind {
     VendorBoot,
     Dtbo,
     Vbmeta,
+    /// The whole super partition, its metadata and all its partitions.
+    Super,
+    /// One of the partitions super holds: system, vendor and their like.
+    Logical,
 }
 
 /// The ramdisk a boot image carries.
@@ -67,6 +84,10 @@ impl ImageKind {
             ImageKind::VendorBoot => &["vendor_boot"],
             ImageKind::Dtbo => &["dtbo"],
             ImageKind::Vbmeta => &["vbmeta", "vbmeta_system", "vbmeta_vendor"],
+            ImageKind::Super => &["super"],
+            // Filled with the partitions this phone's super holds, which
+            // only the phone knows.
+            ImageKind::Logical => &[],
         }
     }
 }
@@ -97,7 +118,88 @@ pub fn detect<R: Read + Seek>(file: &mut R, head: &[u8]) -> Result<Option<ImageK
     if head.starts_with(VBMETA_MAGIC) {
         return Ok(Some(ImageKind::Vbmeta));
     }
+    // A sparse image says what it holds in its decoded form; a head too
+    // short to hold its header is nothing this recovery writes.
+    if head.len() >= 28 && head.starts_with(&SPARSE_MAGIC) {
+        let mut decoded = Sparse::new(file, head)?;
+        let mut inner = Vec::with_capacity(4096);
+        (&mut decoded).take(4096).read_to_end(&mut inner).context("read the start of a sparse image")?;
+        if let Some(kind) = detect(&mut io::Cursor::new(&inner[..]), &inner)? {
+            return Ok(Some(kind));
+        }
+        return Ok(classified(&inner));
+    }
+    if classified(head).is_some() {
+        return Ok(classified(head));
+    }
     Ok(None)
+}
+
+/// What an image whose first bytes `head` are not a boot, vendor_boot, dtbo
+/// or vbmeta image holds: the whole super, or one partition of it.
+fn classified(head: &[u8]) -> Option<ImageKind> {
+    if head.len() >= 4 && u32::from_le_bytes(head[0..4].try_into().expect("four bytes")) == LP_GEOMETRY_MAGIC {
+        return Some(ImageKind::Super);
+    }
+    if head.len() >= EXT4_MAGIC_AT + 2 && head[EXT4_MAGIC_AT..EXT4_MAGIC_AT + 2] == EXT4_MAGIC {
+        return Some(ImageKind::Logical);
+    }
+    if head.len() >= F2FS_MAGIC_AT + 4 && head[F2FS_MAGIC_AT..F2FS_MAGIC_AT + 4] == F2FS_MAGIC {
+        return Some(ImageKind::Logical);
+    }
+    None
+}
+
+/// The partitions the super a phone holds carries, in the order it lists
+/// them, without their slot's suffix where the phone is A/B.
+pub fn logical_partitions() -> Result<Vec<String>> {
+    let slot = skyward_vab::booted_slot()?;
+    let mut out = Vec::new();
+    for (base, size) in skyward_vab::slot_sizes(slot)? {
+        if size > 0 {
+            out.push(base);
+        }
+    }
+    Ok(out)
+}
+
+/// The partition names a whole super's own metadata lists, read from the
+/// image, so that a super made for another layout is refused before
+/// anything is written. Every name must be bare: a phone that is not A/B
+/// names its partitions without a slot's suffix, and a super that carries
+/// `_a` and `_b` names is made for one that is.
+pub fn super_partitions<R: Read>(image: &mut R, len: u64) -> Result<Vec<String>> {
+    ensure!(len >= 8192, "the image is {len} bytes, too few to hold super's metadata");
+    let mut geometry = [0u8; 4096];
+    image.read_exact(&mut geometry).context("read the geometry of super's metadata")?;
+    let magic = u32::from_le_bytes(geometry[0..4].try_into().expect("four bytes"));
+    ensure!(magic == LP_GEOMETRY_MAGIC, "the image is no super: its metadata starts {magic:#x}");
+    let max_size = u32::from_le_bytes(geometry[12..16].try_into().expect("four bytes")) as usize;
+    ensure!((4096..=1 << 20).contains(&max_size), "super's metadata says its size is {max_size}");
+    let mut header = vec![0u8; 4096.min(max_size)];
+    image.read_exact(&mut header).context("read the header of super's metadata")?;
+    let magic = u32::from_le_bytes(header[0..4].try_into().expect("four bytes"));
+    ensure!(magic == LP_HEADER_MAGIC, "super's metadata header starts {magic:#x}");
+    // The header: magic, major, minor, header_size, then the tables' sizes,
+    // then the partition and extent entries at 80 and after.
+    let header_size = u32::from_le_bytes(header[8..12].try_into().expect("four bytes")) as usize;
+    ensure!(header_size >= 80 && header_size <= header.len(), "super's metadata header is {header_size} bytes");
+    let count = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().expect("four bytes")) as usize;
+    let (partitions, extents, groups, block_devices) = (count(44), count(48), count(52), count(56));
+    ensure!(partitions < 4096 && extents < 65536 && groups < 4096 && block_devices < 256, "super's metadata names {partitions} partitions");
+    let entry = 52;
+    let end = 80 + partitions * entry;
+    ensure!(end <= header.len(), "super's metadata has {partitions} partitions where its header holds {}", header.len());
+    let mut out = Vec::with_capacity(partitions);
+    for i in 0..partitions {
+        let at = 80 + i * entry;
+        let raw = &header[at..at + entry];
+        let name = raw[0..36].split(|b| *b == 0).next().unwrap_or(&[]);
+        let name = String::from_utf8_lossy(name).into_owned();
+        ensure!(!name.is_empty(), "a partition of super's metadata has no name");
+        out.push(name);
+    }
+    Ok(out)
 }
 
 /// Whether a packed ramdisk is a recovery's, by the names in its archive.
@@ -228,9 +330,20 @@ pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progr
     image.seek(SeekFrom::Start(0)).context("rewind the image")?;
     let (gap, tail): (u64, &[u8]) = if moved { (size - len - FOOTER_LEN, &footer) } else { (0, &[]) };
     let end = len + gap + tail.len() as u64;
-    let total = end * outs.len() as u64 * 2;
-    let mut source = image.take(len).chain(io::repeat(0).take(gap)).chain(tail);
+    let source = image.take(len).chain(io::repeat(0).take(gap)).chain(tail);
 
+    write_and_check(source, end, outs, progress)
+}
+
+/// Write `end` bytes of `source` to every partition of `outs`, then read
+/// each back and compare, telling the bytes written and read back so far.
+fn write_and_check(
+    mut source: impl Read,
+    end: u64,
+    mut outs: Vec<(&PathBuf, std::fs::File, u64)>,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<()> {
+    let total = end * outs.len() as u64 * 2;
     let mut buf = vec![0u8; CHUNK];
     let mut written = Sha256::new();
     let mut done = 0;
@@ -266,6 +379,154 @@ pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progr
         ensure!(back.finalize() == written, "{} reads back different from what was written", path.display());
     }
     Ok(())
+}
+
+/// Write `len` bytes of the already opened images to `devices` as they are,
+/// with no footer to move: what a logical partition, a whole super or a
+/// decoded sparse image goes in as.
+pub fn flash_plain(image: impl Read, len: u64, devices: &[PathBuf], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
+    ensure!(!devices.is_empty(), "no partition to write");
+    let mut outs = Vec::with_capacity(devices.len());
+    for path in devices {
+        let mut f = OpenOptions::new().read(true).write(true).open(path).with_context(|| format!("open {}", path.display()))?;
+        let size = f.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", path.display()))?;
+        f.seek(SeekFrom::Start(0)).with_context(|| format!("rewind {}", path.display()))?;
+        ensure!(len <= size, "the image is {len} bytes, more than the {size} its partition holds");
+        outs.push((path, f, size));
+    }
+    write_and_check(image, len, outs, progress)
+}
+
+/// A sparse image's chunks decoded into the stream its contents form.
+pub struct Sparse<R> {
+    inner: R,
+    block: u32,
+    left: u64,
+    /// What the current chunk gives: bytes of the image, one byte repeated,
+    /// or zeros.
+    fill: [u8; 4],
+    kind: ChunkKind,
+    left_in_chunk: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChunkKind {
+    Raw,
+    Fill,
+    Zero,
+}
+
+impl<R: Read + Seek> Sparse<R> {
+    /// The image `inner`, whose first bytes are `head`, as the bytes it
+    /// spells out.
+    pub fn new(mut inner: R, head: &[u8]) -> Result<Sparse<R>> {
+        ensure!(head.len() >= 28, "a sparse image's header is {} bytes", head.len());
+        let u16_at = |at: usize| u16::from_le_bytes(head[at..at + 2].try_into().expect("two bytes"));
+        let u32_at = |at: usize| u32::from_le_bytes(head[at..at + 4].try_into().expect("four bytes"));
+        ensure!(head.starts_with(&SPARSE_MAGIC), "the image does not start as a sparse image");
+        let file_header = u16_at(8) as u64;
+        let block = u32_at(12);
+        let blocks = u32_at(16) as u64;
+        ensure!(file_header >= 28 && block.is_power_of_two(), "a sparse image's header says {file_header} bytes and {block}-byte blocks");
+        inner.seek(SeekFrom::Start(file_header)).context("seek past a sparse image's header")?;
+        Ok(Sparse { inner, block, left: blocks * u64::from(block), fill: [0; 4], kind: ChunkKind::Zero, left_in_chunk: 0 })
+    }
+}
+
+impl<R> Sparse<R> {
+    /// How many bytes the image spells out.
+    fn spelled(&self) -> u64 {
+        self.left
+    }
+
+}
+
+impl<R: Read> Sparse<R> {
+    /// Read the header of the next chunk, stepping over the ones that carry
+    /// nothing of the image.
+    fn next_chunk(&mut self) -> Result<()> {
+        loop {
+            let mut header = [0u8; 12];
+            self.inner.read_exact(&mut header).context("read a sparse chunk's header")?;
+            let u16_at = |at: usize| u16::from_le_bytes(header[at..at + 2].try_into().expect("two bytes"));
+            let u32_at = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().expect("four bytes"));
+            let (kind, blocks, bytes) = (u16_at(0), u64::from(u32_at(4)), u64::from(u32_at(8)));
+            let data = blocks * u64::from(self.block);
+            match kind {
+                // Raw: the bytes of the image follow.
+                0xcac1 => {
+                    ensure!(bytes == 12 + data, "a raw chunk of {data} bytes says it takes {bytes}");
+                    self.kind = ChunkKind::Raw;
+                    self.left_in_chunk = data;
+                    return Ok(());
+                }
+                // Fill: one four-byte pattern repeated.
+                0xcac2 => {
+                    ensure!(bytes == 16, "a fill chunk says it takes {bytes} bytes");
+                    self.inner.read_exact(&mut self.fill)?;
+                    self.kind = ChunkKind::Fill;
+                    self.left_in_chunk = data;
+                    return Ok(());
+                }
+                // Care: zeros.
+                0xcac3 => {
+                    ensure!(bytes == 12, "a don't-care chunk says it takes {bytes} bytes");
+                    self.kind = ChunkKind::Zero;
+                    self.left_in_chunk = data;
+                    return Ok(());
+                }
+                // A checksum of the chunk before: nothing of the image.
+                0xcac4 => {
+                    ensure!(bytes == 16, "a crc chunk says it takes {bytes} bytes");
+                    let mut crc = [0u8; 4];
+                    self.inner.read_exact(&mut crc)?;
+                    continue;
+                }
+                other => bail!("a sparse chunk of unknown kind {other:#x}"),
+            }
+        }
+    }
+}
+
+impl<R: Read> Read for Sparse<R> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.left == 0 {
+            return Ok(0);
+        }
+        if self.left_in_chunk == 0 {
+            self.next_chunk().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{e:#}")))?;
+        }
+        let n = (out.len() as u64).min(self.left_in_chunk).min(self.left) as usize;
+        match self.kind {
+            ChunkKind::Raw => self.inner.read_exact(&mut out[..n])?,
+            ChunkKind::Fill => {
+                for (i, b) in out[..n].iter_mut().enumerate() {
+                    *b = self.fill[i % 4];
+                }
+            }
+            ChunkKind::Zero => out[..n].fill(0),
+        }
+        self.left_in_chunk -= n as u64;
+        self.left -= n as u64;
+        Ok(n)
+    }
+}
+
+/// The reader an image's bytes come from, decoding a sparse one: the
+/// length of what it spells out, and the reader itself.
+pub fn opened<R: Read + Seek + 'static>(mut inner: R) -> Result<(u64, Box<dyn Read>)> {
+    let mut head = Vec::with_capacity(28);
+    (&mut inner).take(28).read_to_end(&mut head).context("read an image's first bytes")?;
+    if head.starts_with(&SPARSE_MAGIC) {
+        let sparse = Sparse::new(inner, &head)?;
+        // What is left is the whole of it, the reader not yet having read
+        // anything.
+        let len = sparse.spelled();
+        return Ok((len, Box::new(sparse)));
+    }
+    let len = inner.seek(SeekFrom::End(0)).context("find the image's size")?;
+    inner.seek(SeekFrom::Start(0)).context("rewind the image")?;
+    Ok((len, Box::new(inner)))
 }
 
 pub(crate) use skyward_block::drop_cache;
@@ -502,5 +763,71 @@ mod tests {
         let err = flash_all(&[1u8; 4097], &slots).unwrap_err();
         assert!(err.to_string().contains("4097"), "{err}");
         assert!(std::fs::read(&slots[0]).unwrap().iter().all(|&b| b == 0xaa));
+    }
+
+    /// A sparse image of four blocks: one raw, one filled, two don't-care,
+    /// with a crc chunk between them, spells out the same bytes as an
+    /// image written plainly.
+    #[test]
+    fn a_sparse_image_spells_out_its_blocks() {
+        let block = 4u32;
+        let raw = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut sparse = Vec::new();
+        sparse.extend_from_slice(&SPARSE_MAGIC);
+        sparse.extend_from_slice(&0u16.to_le_bytes()); // major
+        sparse.extend_from_slice(&0u16.to_le_bytes()); // minor
+        sparse.extend_from_slice(&28u16.to_le_bytes()); // file header
+        sparse.extend_from_slice(&12u16.to_le_bytes()); // chunk header
+        sparse.extend_from_slice(&block.to_le_bytes());
+        sparse.extend_from_slice(&4u32.to_le_bytes()); // total blocks
+        sparse.extend_from_slice(&4u32.to_le_bytes()); // total chunks
+        sparse.extend_from_slice(&0u32.to_le_bytes()); // checksum
+        let chunk = |kind: u16, blocks: u32, bytes: u32| {
+            let mut out = Vec::new();
+            out.extend_from_slice(&kind.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&blocks.to_le_bytes());
+            out.extend_from_slice(&bytes.to_le_bytes());
+            out
+        };
+        sparse.extend_from_slice(&chunk(0xcac1, 2, 12 + 8));
+        let mut raw_chunk = vec![0u8; 8].to_vec();
+        raw_chunk.copy_from_slice(&raw);
+        sparse.extend_from_slice(&raw_chunk);
+        sparse.extend_from_slice(&chunk(0xcac4, 0, 16));
+        sparse.extend_from_slice(&0u32.to_le_bytes()); // crc
+        sparse.extend_from_slice(&chunk(0xcac2, 1, 16));
+        sparse.extend_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
+        sparse.extend_from_slice(&chunk(0xcac3, 1, 12));
+
+        let head = sparse[..28].to_vec();
+        let mut decoded = Sparse::new(io::Cursor::new(sparse), &head).unwrap();
+        let mut out = Vec::new();
+        decoded.read_to_end(&mut out).unwrap();
+        assert_eq!(out.len(), 16);
+        assert_eq!(&out[0..2], &[1, 2]);
+        assert_eq!(&out[2..8], &[3, 4, 5, 6, 7, 8]);
+        assert_eq!(&out[8..12], &[0xaa, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(&out[12..16], &[0, 0, 0, 0]);
+    }
+
+    /// A super's metadata names its partitions; one named as an A/B phone
+    /// names them is told apart.
+    #[test]
+    fn a_supers_metadata_names_its_partitions() {
+        let mut image = vec![0u8; 8192];
+        image[0..4].copy_from_slice(&LP_GEOMETRY_MAGIC.to_le_bytes());
+        image[12..16].copy_from_slice(&4096u32.to_le_bytes()); // metadata size
+        let header = 4096;
+        image[header..header + 4].copy_from_slice(&LP_HEADER_MAGIC.to_le_bytes());
+        image[header + 8..header + 12].copy_from_slice(&80u32.to_le_bytes()); // header size
+        image[header + 44..header + 48].copy_from_slice(&2u32.to_le_bytes()); // partitions
+        for (i, name) in ["system", "vendor_a"].iter().enumerate() {
+            let at = header + 80 + i * 52;
+            image[at..at + name.len()].copy_from_slice(name.as_bytes());
+        }
+        let names = super_partitions(&mut io::Cursor::new(image), 8192).unwrap();
+        assert_eq!(names, vec!["system".to_string(), "vendor_a".to_string()]);
+        assert!(names.iter().any(|n| n.ends_with("_a")), "a name with the slot's suffix is found");
     }
 }

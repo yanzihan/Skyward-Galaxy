@@ -785,7 +785,16 @@ fn lines(from: impl Read, mut each: impl FnMut(&str) -> io::Result<()>) -> io::R
 
 fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
     let dir = Path::new(skyward_block::BY_NAME);
-    let partitions = image::partitions(kind, dir)?;
+    // A logical partition's image goes into one of the partitions super
+    // holds, which only the phone knows; a whole super is one partition.
+    // The names go with the event, which carries them for the rest of this
+    // run: a phone's own partitions are read from it, so they are made to
+    // live as long as the program does.
+    let partitions: Vec<&'static str> = match kind {
+        ImageKind::Logical => image::logical_partitions()?.into_iter().map(|name| &*Box::leak(name.into_boxed_str())).collect(),
+        ImageKind::Super => vec!["super"],
+        _ => image::partitions(kind, dir)?,
+    };
     if partitions.is_empty() {
         return Ok(Done::Decided(Outcome::Refused(Refusal::NoPartition)));
     }
@@ -796,19 +805,64 @@ fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
         Ok(other) => bail!("an image waiting for its partition was told {other:?}"),
     };
     ensure!(partitions.contains(&partition), "{partition} is not among {partitions:?}");
-    ensure!(!slots.is_empty(), "no slot chosen for {partition}");
-    if [skyward_systems::store::BOOT, skyward_systems::store::INIT_BOOT].contains(&partition) {
-        installed_boot_set()?;
-    }
-    let devices: Vec<_> = slots.iter().map(|&slot| image::device(dir, partition, slot)).collect();
+    // A phone that is not A/B keeps one set of partitions: what is written
+    // is the booted slot's, whatever the screen offered.
+    let slot = skyward_vab::booted_slot()?;
+    let slots = match kind {
+        ImageKind::Logical | ImageKind::Super => vec![slot],
+        _ => {
+            ensure!(!slots.is_empty(), "no slot chosen for {partition}");
+            slots
+        }
+    };
     let mut file = BufReader::with_capacity(1 << 20, File::open(fuse::PACKAGE).context("open the package")?);
     let mut told: Option<Instant> = None;
-    image::flash(&mut file, size, &devices, &mut |done, total| {
+    let mut progress = |done: u64, total: u64| {
         if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
             ctx.send(Event::Progress(Stage::Flashing { done, total }));
             told = Some(Instant::now());
         }
-    })?;
+    };
+    match kind {
+        // The whole super: written only where its own metadata names bare
+        // partitions, as a phone that is not A/B keeps them, and only where
+        // it fits.
+        ImageKind::Super => {
+            let device = dir.join("super");
+            let (len, mut source) = image::opened(file).context("read the image")?;
+            let names = image::super_partitions(&mut source, len).context("read the partitions super's metadata names")?;
+            if let Some(named) = names.iter().find(|n| n.ends_with("_a") || n.ends_with("_b")) {
+                return Ok(Done::Decided(Outcome::Refused(Refusal::SuperForAb(named.clone()))));
+            }
+            let size = skyward_block::size_bytes(&device).with_context(|| format!("find the size of {}", device.display()))?;
+            if len > size {
+                return Ok(Done::Decided(Outcome::Refused(Refusal::TooLarge { image: len, partition: size })));
+            }
+            file = BufReader::with_capacity(1 << 20, File::open(fuse::PACKAGE).context("open the package")?);
+            let (_, source) = image::opened(file).context("read the image")?;
+            image::flash_plain(source, len, &[device], &mut progress)?;
+        }
+        // One of super's partitions: mapped writable under a name of its
+        // own, written, and taken apart again.
+        ImageKind::Logical => {
+            // A mounted partition is unmounted first: its own mapping would
+            // otherwise read the blocks as the old ones.
+            skyward_vab::unmount_one(slot, partition).with_context(|| format!("unmount {partition}"))?;
+            let whole = skyward_vab::map_whole(slot, partition, &format!("skyward-flash-{partition}"), false)?;
+            let (len, source) = image::opened(file).context("read the image")?;
+            let written = image::flash_plain(source, len, std::slice::from_ref(&whole.device), &mut progress);
+            let unmapped = skyward_vab::unmap_whole(&whole);
+            written?;
+            unmapped?;
+        }
+        _ => {
+            if [skyward_systems::store::BOOT, skyward_systems::store::INIT_BOOT].contains(&partition) {
+                installed_boot_set()?;
+            }
+            let devices: Vec<_> = slots.iter().map(|&slot| image::device(dir, partition, slot)).collect();
+            image::flash(&mut file, size, &devices, &mut progress)?;
+        }
+    }
     Ok(Done::Decided(Outcome::Flashed { partition, slots }))
 }
 

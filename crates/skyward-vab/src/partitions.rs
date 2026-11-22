@@ -366,7 +366,7 @@ pub fn mount_one(slot: Slot, base_name: &str) -> Result<Mounted> {
     let super_dev = super_device();
     let md = skyward_lp::read(&super_dev, slot.number())?;
     let devices = block_devices(&md, &super_dev)?;
-    let name = format!("{base_name}{}", slot.suffix());
+    let name = crate::partition_name(base_name, slot)?;
     let p = slot_partitions(&md, slot)
         .into_iter()
         .find(|p| p.name == name)
@@ -406,7 +406,7 @@ fn unmap(name: &str, point: &Path) -> Result<()> {
 /// unmounted: its snapshot stays mapped, for its merge to go on and for it
 /// to be mounted again.
 pub fn unmount_one(slot: Slot, base_name: &str) -> Result<()> {
-    let name = format!("{base_name}{}", slot.suffix());
+    let name = crate::partition_name(base_name, slot)?;
     let point = mount_point(base_name);
     if !snapshots::is_snapshot(&name)? {
         return unmap(&name, &point);

@@ -926,6 +926,14 @@ pub fn image_kind(l: Lang, kind: ImageKind) -> (&'static str, &'static str) {
         }
         ImageKind::Dtbo => (["dtbo 镜像", "dtbo 映像檔", "dtbo image"], ["包含设备树叠加层", "包含裝置樹疊加層", "Holds device tree overlays"]),
         ImageKind::Vbmeta => (["vbmeta 镜像", "vbmeta 映像檔", "vbmeta image"], ["包含启动验证数据", "包含啟動驗證資料", "Holds verified boot data"]),
+        ImageKind::Super => (
+            ["super 镜像", "super 映像檔", "super image"],
+            ["包含全部逻辑分区及其元数据", "包含全部邏輯分割區及其中介資料", "Holds every logical partition and their metadata"],
+        ),
+        ImageKind::Logical => (
+            ["逻辑分区镜像", "邏輯分割區映像檔", "Logical partition image"],
+            ["写入 super 里的一个分区，如 system 或 vendor", "寫入 super 裡的一個分割區，如 system 或 vendor", "Goes into one partition super holds, such as system or vendor"],
+        ),
     };
     (l.pick(name), l.pick(holds))
 }
@@ -1007,6 +1015,18 @@ pub fn refusal(l: Lang, r: &Refusal, codename: &str, source: Source, zone: usize
             "无法安装分区镜像，请{give} A/B 完整更新包或刷机包。",
             "無法安裝分割區映像檔，請{give} A/B 完整更新檔或刷機包。",
             "A partition image can't be installed this way. {give} an A/B full OTA package or a flashable zip."
+        ),
+        Refusal::SuperForAb(name) => tr!(
+            l,
+            "这个 super 镜像里的分区名为 {name}，是给 A/B 机型的；本机只有一个槽位，分区名不带后缀。请用本机型的 super 镜像。",
+            "這個 super 映像檔裡的分割區名為 {name}，是給 A/B 機型的；本機只有一個槽位，分割區名不帶後綴。請用本機型的 super 映像檔。",
+            "This super image names a partition {name}, which is how an A/B phone names it; this phone has one slot and bare names. Use a super image made for this phone."
+        ),
+        Refusal::TooLarge { image, partition } => tr!(
+            l,
+            "镜像 {image} 字节，比分区 {partition} 字节大，放不下。",
+            "映像檔 {image} 位元組，比分割區 {partition} 位元組大，放不下。",
+            "The image is {image} bytes, more than the {partition} its partition holds."
         ),
         Refusal::NotAb(kind) if kind.is_empty() => tr!(
             l,
