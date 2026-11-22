@@ -192,8 +192,9 @@ pub enum Refusal {
     /// A whole super whose metadata names a partition with a slot's
     /// suffix, as a super of an A/B phone does: the name it holds.
     SuperForAb(String),
-    /// An image larger than the partition it would go to.
-    TooLarge { image: u64, partition: u64 },
+    /// An image whose size is not the partition's, as a whole super's must
+    /// be.
+    SizeMismatch { image: u64, partition: u64 },
     /// An update package that is not for A/B phones; the type it names.
     NotAb(String),
     /// A package in misc that does not say it erases the phone for good;

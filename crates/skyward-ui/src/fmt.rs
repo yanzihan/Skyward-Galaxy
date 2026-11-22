@@ -1022,11 +1022,11 @@ pub fn refusal(l: Lang, r: &Refusal, codename: &str, source: Source, zone: usize
             "這個 super 映像檔裡的分割區名為 {name}，是給 A/B 機型的；本機只有一個槽位，分割區名不帶後綴。請用本機型的 super 映像檔。",
             "This super image names a partition {name}, which is how an A/B phone names it; this phone has one slot and bare names. Use a super image made for this phone."
         ),
-        Refusal::TooLarge { image, partition } => tr!(
+        Refusal::SizeMismatch { image, partition } => tr!(
             l,
-            "镜像 {image} 字节，比分区 {partition} 字节大，放不下。",
-            "映像檔 {image} 位元組，比分割區 {partition} 位元組大，放不下。",
-            "The image is {image} bytes, more than the {partition} its partition holds."
+            "super 镜像 {image} 字节，而 super 分区为 {partition} 字节：两者须一致才能写入。",
+            "super 映像檔 {image} 位元組，而 super 分割區為 {partition} 位元組：兩者須一致才能寫入。",
+            "The super image is {image} bytes and the super partition {partition}: they must be the same size."
         ),
         Refusal::NotAb(kind) if kind.is_empty() => tr!(
             l,
