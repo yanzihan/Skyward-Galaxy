@@ -97,11 +97,12 @@ impl App {
         self.dirty = true;
     }
 
-    /// A charger or a computer was attached, `cable_in`, or taken away: the
-    /// dark panel lights, and a lit one stays at full brightness for the
-    /// screen-off time from now, as on the phone's own system. A cable
-    /// going in brings up the charging screen, over the page or on the
-    /// panel lit for it, which then goes dark again.
+    /// A charger or a computer was attached, `cable_in`, or taken away: a
+    /// cable going in lights the dark panel and brings up the charging
+    /// screen, over the page or on the panel lit for it, which then goes
+    /// dark again. A cable going out leaves the panel as it stands, and
+    /// takes a charging screen still showing with it: none is made of a
+    /// phone that is no longer charging.
     pub fn plugged(&mut self, now: u64, cable_in: bool) {
         if cable_in {
             let dark = !self.display_on;
@@ -113,11 +114,24 @@ impl App {
             }
             self.charging = Some(Charging { since: now, shown, dark_after: dark });
             self.dirty = true;
-        }
-        if self.display_on {
-            self.stir(now);
-        } else {
-            self.wake(now);
+            if self.display_on {
+                self.stir(now);
+            } else {
+                self.wake(now);
+            }
+        } else if let Some(c) = &self.charging
+            && c.shown.on
+        {
+            // The cable coming out takes the charging screen with it, rather
+            // than leaving it to turn into a not-charging one. It woke the
+            // panel for its time alone, and the cable gone it may go back to
+            // sleep; over a lit page only the screen goes, the panel staying
+            // lit as it was.
+            if c.dark_after {
+                self.sleep(now);
+            } else {
+                self.dismiss_charging(now);
+            }
         }
     }
 
@@ -409,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cable_coming_out_lights_the_dark_panel_and_keeps_a_lit_one_lit() {
+    fn a_cable_coming_out_leaves_the_panel_as_it_stands() {
         let mut app = App::new(Screen::Home, W, H, PPD);
         app.tick(0);
         app.tick(OFF);
@@ -417,18 +431,16 @@ mod tests {
         assert_eq!(app.panel(OFF + 365), None);
         let pulled = OFF + 1000;
         app.plugged(pulled, false);
-        assert!(app.display_on(), "the cable coming out lights the panel");
-        assert!(!app.charge_shown(), "and shows the page");
-        assert_eq!(app.panel(pulled), Some(SLIDER_START));
-        assert_eq!(app.deadline(pulled + 520), Some(pulled + DIMS), "for the screen-off time, once the content is up");
-        app.tick(pulled + DIMS);
-        assert_eq!(app.panel(pulled + DIMS + 500), Some(dim_level(SLIDER_START)));
-        let again = pulled + DIMS + 600;
-        app.plugged(again, false);
-        assert_eq!(app.panel(again + 150), Some(SLIDER_START), "a cable coming out brightens a lit panel");
-        assert_eq!(app.deadline(again + 150), Some(again + DIMS), "and the wait starts over");
-        press(&mut app, Key::Power, again + 200);
-        assert!(!app.display_on(), "the power key turns it off at once, as ever");
+        assert!(!app.display_on(), "a dark panel stays dark, as the phone's own system leaves it");
+        assert_eq!(app.deadline(pulled), None);
+        assert!(!app.charge_shown());
+        let lit = pulled + 6000;
+        press(&mut app, Key::Power, lit);
+        assert!(app.display_on());
+        app.plugged(lit + 100, false);
+        assert!(app.display_on(), "a lit panel stays lit");
+        assert_eq!(app.deadline(lit + 600), Some(lit + DIMS), "and its wait goes on as it was");
+        assert!(!app.charge_shown());
     }
 
     #[test]
@@ -450,6 +462,48 @@ mod tests {
         app.tick(plugged + CHARGE_MS + 365);
         assert_eq!(app.panel(plugged + CHARGE_MS + 365), None);
         assert!(app.charging.is_none(), "and goes with it");
+    }
+
+    #[test]
+    fn a_cable_coming_out_takes_a_lit_charging_screen_with_it() {
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.tick(0);
+        app.plugged(1000, true);
+        assert!(app.charge_shown());
+        app.plugged(1500, false);
+        assert!(!app.charge_shown(), "the cable coming out sent it away, not into a not-charging one");
+        assert!(app.display_on(), "and the panel stays lit for the page");
+        app.tick(1900);
+        assert!(app.charging.is_none());
+        assert!(app.display_on());
+    }
+
+    #[test]
+    fn a_cable_coming_out_after_waking_the_panel_for_it_lets_it_go_dark_again() {
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.tick(0);
+        press(&mut app, Key::Power, 0);
+        app.tick(365);
+        app.plugged(1000, true);
+        assert!(app.display_on() && app.charge_shown(), "the dark panel woke for the charging screen");
+        app.plugged(1500, false);
+        assert!(!app.display_on(), "the cable coming out turns it off again, as its time would");
+        app.tick(1500 + 365);
+        assert!(!app.charge_shown(), "and the charging screen goes with the content");
+    }
+
+    #[test]
+    fn the_lock_screen_is_made_of_the_page_never_of_the_charging_screen() {
+        let (f, i) = (fonts(), DeviceInfo { battery: Some(battery_at(64, Charge::Charging)), ..info() });
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.tick(0);
+        app.compose(&mut Canvas::new(W, H), &f, &i, "12:00", 100);
+        let page = app.behind.as_ref().map(Canvas::sharpness);
+        assert!(page.is_some(), "the page was kept for the lock");
+        app.plugged(1000, true);
+        app.compose(&mut Canvas::new(W, H), &f, &i, "12:00", 1000);
+        assert!(app.charge_shown(), "the charging screen showed");
+        assert_eq!(app.behind.as_ref().map(Canvas::sharpness), page, "the charging screen was not kept for the lock");
     }
 
     #[test]

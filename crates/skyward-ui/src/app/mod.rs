@@ -777,7 +777,7 @@ const BRIGHTEN: Ease = Ease::Out(520, 2);
 /// when the cable went in, and goes in 300 ms.
 const CHARGE_SHOW: Ease = Ease::Out(420, 2);
 const CHARGE_HIDE: Ease = Ease::Out(300, 2);
-const CHARGE_MS: u64 = 4000;
+const CHARGE_MS: u64 = 3000;
 
 /// How a part of the screen eases between shown and hidden.
 #[derive(Clone, Copy, Debug, PartialEq)]
