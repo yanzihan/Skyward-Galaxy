@@ -406,7 +406,22 @@ impl App {
                     Security::Enterprise => {
                         self.say(l.pick(["暂不支持需要账号登录的网络", "尚不支援需要帳號登入的網路", "Networks that need an account sign-in aren't supported"]), now)
                     }
-                    s if s.password() => self.ask_password(network),
+                    s if s.password() => {
+                        // One joined before joins again with what was typed
+                        // then: the password page opens only for a network
+                        // the recovery has nothing saved for.
+                        match self.state.wifi.iter().find(|saved| saved.ssid == network.ssid) {
+                            Some(saved) => {
+                                return vec![Effect::JoinWlan {
+                                    ssid: network.ssid,
+                                    name: network.name,
+                                    security: network.security,
+                                    password: Secret(saved.password.clone()),
+                                }]
+                            }
+                            None => self.ask_password(network),
+                        }
+                    }
                     _ => {
                         return vec![Effect::JoinWlan {
                             ssid: network.ssid,

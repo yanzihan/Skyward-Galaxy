@@ -4,23 +4,21 @@ brand = "Samsung"
 model = "Galaxy Z Flip4 5G"
 # 三星不用 A/B 无缝更新:boot/recovery 等分区不带 _a/_b 后缀
 ab = false
+# recovery 分区 100MiB,基底镜像补齐到这个大小
+recovery_size = 104857600
 soc = { hans = "骁龙®8+ Gen 1移动平台", hant = "Snapdragon® 8+ Gen 1 行動平台", en = "Snapdragon® 8+ Gen 1 Mobile Platform" }
 # 各 ROM 通用的系统版本字段
 os_version_prop = "ro.build.display.id"
 lang = "zh-CN"
+# V2 TWRP 的 ramdisk 是按 F721B 编的，probe/默认属性里机型是 SM-F721B；
+# 这台是港版 F7210，覆盖掉，USB/MTP 才会显示正确型号。
+product = "SM-F7210"
+# TWRP 的主题图在 Skyward 里用不到，100MiB 要塞 QCA 固件，去掉腾地方。
+drop = ["twres/"]
 # 港版官方 recovery 基底:内核 5.10.236 和港版 vendor 的 QCA 模块同版本。
 # 100MiB 要塞下 Skyward + 完整 MiSans + qca_cld3,丢掉 recovery 用不到的:
 # 图形/摄像头之外的 GPU、Broadcom 的 dhd、mac80211、integrated WLAN 的
 # icnss2,以及官方 recovery 自己的界面图。
-drop = [
-    "res/",
-    "lib/modules/dhd.ko",
-    "lib/modules/mac80211.ko",
-    "lib/modules/msm_kgsl.ko",
-    "lib/modules/icnss2.ko",
-    # 换成为 qca_cld3 补好依赖行的版本(--add-file)
-    "lib/modules/modules.dep",
-]
 
 [display]
 width = 1080
@@ -32,11 +30,10 @@ brightness = 0.5
 corner_radius = 60
 
 [modules]
-# WiFi 是 Qualcomm QCA6490。港版官方 recovery 基底的内核 5.10.236 和港版
-# vendor_dlkm 的 qca_cld3 同版本;驱动、依赖模块和 modules.dep 都塞进了
-# ramdisk 的 /lib/modules,不再从安装系统的 vendor_dlkm 取(那边是国行
-# W7025 的模块,vermagic 对不上)。
-sources = ["vendor_boot"]
+# WiFi 是 Qualcomm QCA6490。内核用港版 5.10.236 后，vendor_dlkm 里的
+# qca_cld3 与内核同版本，直接从安装系统的 vendor_dlkm 取；vendor_boot 的
+# 模块仍然优先（开机早期 init 已经加载了依赖）。
+sources = ["vendor_boot", "vendor_dlkm", "vendor"]
 load = []
 
 [wlan]
@@ -46,6 +43,12 @@ supplicant = "/vendor/bin/hw/wpa_supplicant"
 # vendor 自己没有 libc++/liblog/libcrypto/libssl,靠 VNDK bundle 和系统补
 libraries = ["/vendor/lib64", "$bundle", "/system/lib64", "/mnt/system/system/lib64"]
 probe = "http://connectivitycheck.gstatic.com/generate_204"
+# The phone's init enables the WLAN chip's cold boot calibration with this
+# write once its partitions are up; the driver makes no interface until it
+# is told. Written after the driver's modules are in.
+[[wlan.writes]]
+path = "/sys/kernel/cnss/fs_ready"
+value = "1"
 
 [haptics]
 strength = { lightest = 0.2, strongest = 1.0 }
