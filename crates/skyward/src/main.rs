@@ -579,7 +579,7 @@ fn main() -> Result<()> {
                 Ok(steps) => programs.extend(keys::programs(&steps)),
                 Err(e) => eprintln!("the programs of the phone's keys are not known: {e:#}"),
             }
-            ui::run(&cfg, &programs, &font, &mono, bcb::Request::default(), start, dump.as_deref())
+            ui::run(&cfg, &programs, &font, &mono, bcb::Request::default(), start, dump.as_deref(), None)
         }
     }
 }
@@ -1051,10 +1051,16 @@ fn recovery() -> Result<()> {
                 }
             }
             if let Some(splash) = splash {
-                splash.stop();
+                // The panel the picture drew on comes back with its last
+                // frame on it; the pages take it over, so it never goes dark
+                // between the two.
+                let panel = splash.stop();
+                let root = Path::new("/");
+                ui::run(&cfg, &programs, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Home, None, panel)
+            } else {
+                let root = Path::new("/");
+                ui::run(&cfg, &programs, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Home, None, None)
             }
-            let root = Path::new("/");
-            ui::run(&cfg, &programs, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Home, None)
         }
         #[cfg(not(target_os = "android"))]
         {

@@ -42,7 +42,7 @@ const MIN_SHOW: Duration = Duration::from_millis(1200);
 /// A picture being shown, ended by [`Splash::stop`] or with this value.
 pub struct Splash {
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    thread: Option<JoinHandle<Option<KmsSurface>>>,
     /// When the picture went on the panel.
     started: Instant,
 }
@@ -65,9 +65,11 @@ impl Splash {
         let started = Instant::now();
         let thread = std::thread::Builder::new()
             .name("splash".into())
-            .spawn(move || {
-                if let Err(e) = show(lang, brightness, density, dark, &font, &mono, &taken) {
+            .spawn(move || match show(lang, brightness, density, dark, &font, &mono, &taken) {
+                Ok(panel) => panel,
+                Err(e) => {
                     let _ = skyward_sys::kmsg(&format!("the opening picture did not show: {e:#}"));
+                    None
                 }
             })
             .ok()?;
@@ -76,16 +78,16 @@ impl Splash {
 
     /// Give the panel back, and wait until the picture has let go of it. The
     /// picture is left up for [`MIN_SHOW`] however little there was to wait
-    /// for, so that it is seen.
-    pub fn stop(mut self) {
+    /// for, so that it is seen. The panel comes back as the picture left
+    /// it, showing its last frame, for the pages to take over without the
+    /// panel going dark in between.
+    pub fn stop(mut self) -> Option<KmsSurface> {
         let left = MIN_SHOW.saturating_sub(self.started.elapsed());
         if !left.is_zero() {
             std::thread::sleep(left);
         }
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.thread.take().and_then(|thread| thread.join().ok()).flatten()
     }
 
     /// Ends the picture where the recovery ends before the pages open.
@@ -104,8 +106,8 @@ impl Drop for Splash {
 }
 
 /// Open the panel and the typeface, light the panel, and draw until told to
-/// stop.
-fn show(lang: Lang, brightness: f32, density: u32, dark: bool, font: &PathBuf, mono: &PathBuf, stop: &AtomicBool) -> Result<()> {
+/// stop, giving the panel back as it stands, its last frame on it.
+fn show(lang: Lang, brightness: f32, density: u32, dark: bool, font: &PathBuf, mono: &PathBuf, stop: &AtomicBool) -> Result<Option<KmsSurface>> {
     let mut surface = KmsSurface::open("/dev/dri/card0").context("open the panel")?;
     let (w, h) = surface.size();
     let fonts = Fonts::load(font, 0, mono).context("load the typeface")?;
@@ -135,7 +137,10 @@ fn show(lang: Lang, brightness: f32, density: u32, dark: bool, font: &PathBuf, m
             std::thread::sleep(FRAME - spent);
         }
     }
-    Ok(())
+    // The last frame's flip is waited for, so the pages take a panel at rest
+    // with its last picture on it.
+    surface.settle().context("show the opening picture")?;
+    Ok(Some(surface))
 }
 
 /// Draw one frame of the picture into `out` as a PNG, at `at` milliseconds

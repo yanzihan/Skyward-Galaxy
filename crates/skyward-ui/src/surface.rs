@@ -273,6 +273,12 @@ pub mod kms {
     /// A KMS object's properties by name, with their current values.
     struct Props(HashMap<String, (property::Handle, u64)>);
 
+    // The surface owns its panel outright: the card, the buffers and what is
+    // mapped of them. It is moved between threads only whole, one owner at a
+    // time, as the opening picture hands the panel it drew on to the pages,
+    // so that the panel is never given up between them.
+    unsafe impl Send for KmsSurface {}
+
     impl Props {
         fn read<T: ResourceHandle>(card: &Card, handle: T) -> Result<Self> {
             let values = card.get_properties(handle).context("read properties")?;

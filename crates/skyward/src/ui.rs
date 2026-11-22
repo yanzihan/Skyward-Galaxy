@@ -1055,8 +1055,12 @@ fn job_end(end: filework::End) -> JobEnd {
 /// first of them; asking for nothing, they start at `start`. `programs`
 /// are the phone's own that the recovery keeps running: the
 /// configuration's, and those the phone's partitions name for its keys.
-pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, request: bcb::Request, start: Screen, dump: Option<&Path>) -> Result<()> {
-    let mut pages = Pages::open(cfg, programs, font, mono, request, start, dump)?;
+/// `panel` is the panel the opening picture drew on, where one showed: the
+/// pages draw on it as it stands, so the panel is not given up and taken
+/// again between the picture and them.
+#[allow(clippy::too_many_arguments)]
+pub fn run(cfg: &DeviceConfig, programs: &[Service], font: &Path, mono: &Path, request: bcb::Request, start: Screen, dump: Option<&Path>, panel: Option<KmsSurface>) -> Result<()> {
+    let mut pages = Pages::open(cfg, programs, font, mono, request, start, dump, panel)?;
     pages.begin()?;
     // The phone sleeps while its screen is off and nothing needs it awake.
     let sleeper = Sleeper::start()?;
@@ -1196,7 +1200,7 @@ impl<'a> Pages<'a> {
     /// Bring up the panel, the touchscreen and the pages, as the settings
     /// kept from the starts before leave them, with none of the work the
     /// request asks for started yet.
-    fn open(cfg: &'a DeviceConfig, programs: &'a [Service], font: &Path, mono: &Path, request: bcb::Request, start: Screen, dump: Option<&'a Path>) -> Result<Pages<'a>> {
+    fn open(cfg: &'a DeviceConfig, programs: &'a [Service], font: &Path, mono: &Path, request: bcb::Request, start: Screen, dump: Option<&'a Path>, panel: Option<KmsSurface>) -> Result<Pages<'a>> {
         if cfg.display.density == 0 {
             return Err(anyhow!("{}: [display] density is required to lay out the UI", cfg.device.codename));
         }
@@ -1208,7 +1212,13 @@ impl<'a> Pages<'a> {
         untaken(&mut unread.battery, "the battery", battery.as_ref().err())?;
         let info = skyward_info::collect_with(cfg, battery.unwrap_or_default())?;
         let fonts = Fonts::load(font, 0, mono)?;
-        let mut surface = KmsSurface::open("/dev/dri/card0")?;
+        let mut surface = match panel {
+            Some(surface) => {
+                skyward_sys::kmsg("the pages draw on the panel the opening picture left")?;
+                surface
+            }
+            None => KmsSurface::open("/dev/dri/card0")?,
+        };
         let (w, h) = surface.size();
         // A touch controller that follows the panel wakes as the panel goes
         // from rest to running, and at no other time. The recovery service
