@@ -313,6 +313,7 @@ mod tests {
             voltage: Some(4_200_000),
             quick: false,
             plugged: false,
+            sources: Vec::new(),
         };
         let i = DeviceInfo {
             os_version: Some("G9980ZHSGHZB1".into()),

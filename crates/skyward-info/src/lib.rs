@@ -123,6 +123,10 @@ pub struct Battery {
     /// A charger or a computer powers the phone, by cable or wirelessly: a
     /// power supply besides the battery is online.
     pub plugged: bool,
+    /// Which of those supplies are online, by the names the phone gives
+    /// them, such as `usb` and `ac`: one going online is a cable or a
+    /// charger attached, even where another was online before it.
+    pub sources: Vec<String>,
 }
 
 impl Battery {
@@ -378,14 +382,16 @@ fn battery(root: &Path) -> Result<Option<Battery>> {
     let mut dirs: Vec<_> = entries.map(|e| e.map(|e| e.path())).collect::<Result<_, _>>()?;
     dirs.sort();
     let mut first = None;
-    let mut plugged = false;
+    let mut sources: Vec<String> = Vec::new();
     for dir in dirs {
         match read_opt(dir.join("type"))?.as_deref() {
             Some("Battery") => {
                 first.get_or_insert(dir);
             }
-            Some(_) => plugged |= online(&dir)?,
-            None => {}
+            Some(_) if online(&dir)? => {
+                sources.push(dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+            }
+            Some(_) | None => {}
         }
     }
     let Some(dir) = first else { return Ok(None) };
@@ -397,6 +403,13 @@ fn battery(root: &Path) -> Result<Option<Battery>> {
         "Unknown" => Charge::Unknown,
         other => bail!("{}: status {other:?}", dir.display()),
     };
+    // A charger the drivers name as such powers the phone even where no
+    // supply says it is online, as the phones whose charger is a Qualcomm
+    // one do not: the charging status stands for that supply.
+    if sources.is_empty() && charge == Charge::Charging {
+        sources.push("charge".into());
+    }
+    let plugged = !sources.is_empty();
     Ok(Some(Battery {
         level: parse(&read(dir.join("capacity"))?, "capacity")?,
         charge,
@@ -410,6 +423,7 @@ fn battery(root: &Path) -> Result<Option<Battery>> {
         // turbo and super, which the stock SystemUI all counts quick.
         quick: parse_opt::<u8>(root.with_file_name("qcom-battery").join("quick_charge_type"), "quick_charge_type")?.is_some_and(|k| (1..=4).contains(&k)),
         plugged,
+        sources,
     }))
 }
 

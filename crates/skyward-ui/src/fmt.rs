@@ -1549,6 +1549,7 @@ mod tests {
             voltage: Some(4_482_000),
             quick: false,
             plugged: true,
+            sources: Vec::new(),
         };
         assert_eq!(level(HANS, &b), "100% · 已充满");
         assert_eq!(level(Lang::Hant, &b), "100% · 已充滿");

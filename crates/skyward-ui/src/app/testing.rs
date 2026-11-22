@@ -106,7 +106,8 @@ pub(super) fn opened(screen: Screen, f: &Fonts, i: &DeviceInfo) -> App {
 /// unless it discharges.
 pub(super) fn battery_at(level: u8, charge: Charge) -> skyward_info::Battery {
     let plugged = charge != Charge::Discharging;
-    skyward_info::Battery { level, charge, temp: Some(352), health: None, cycles: None, design: None, full: None, voltage: None, quick: false, plugged }
+    let sources = if plugged { vec!["usb".to_string()] } else { Vec::new() };
+    skyward_info::Battery { level, charge, temp: Some(352), health: None, cycles: None, design: None, full: None, voltage: None, quick: false, plugged, sources }
 }
 
 /// The grey of the screen's pixel at (`x`, `y`).

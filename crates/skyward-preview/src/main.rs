@@ -1563,6 +1563,7 @@ fn p3q(cfg: &DeviceConfig) -> DeviceInfo {
             // The recovery has no fast charging handshake with the charger.
             quick: false,
             plugged: true,
+            sources: Vec::new(),
         }),
         slot: None,
         snapshot: SnapshotState::None,

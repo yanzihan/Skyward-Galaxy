@@ -364,6 +364,7 @@ fn info() -> DeviceInfo {
             voltage: None,
             quick: false,
             plugged: true,
+            sources: Vec::new(),
         }),
         slot: Some(Slot::B),
         snapshot: SnapshotState::None,

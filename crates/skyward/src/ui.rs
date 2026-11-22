@@ -245,14 +245,21 @@ fn fastboot_status() -> Result<(bool, UsbLink)> {
     Ok((running, usb_link()?))
 }
 
-/// Light the panel, as on a cable going in or out, when the battery as it
-/// `was` and as it `is` disagree on whether a charger or a computer powers
-/// the phone.
+/// Light the panel, as on a cable going in or out, when a power supply
+/// besides the one powering the phone before comes online, as when a
+/// charger is attached beside the computer's cable, or when the last of
+/// them goes.
 fn plug(app: &mut App, was: &Option<skyward_info::Battery>, is: &Option<skyward_info::Battery>, now: u64) -> Result<()> {
-    let plugged = |b: &Option<skyward_info::Battery>| b.as_ref().is_some_and(|b| b.plugged);
-    if plugged(was) != plugged(is) {
-        skyward_sys::kmsg(if plugged(is) { "a charger or a computer powers the phone" } else { "the phone runs on its battery" })?;
-        app.plugged(now, plugged(is));
+    let sources = |b: &Option<skyward_info::Battery>| b.as_ref().map(|b| b.sources.clone()).unwrap_or_default();
+    let (before, after) = (sources(was), sources(is));
+    let added: Vec<&String> = after.iter().filter(|s| !before.contains(s)).collect();
+    if !added.is_empty() {
+        let names: Vec<&str> = added.iter().map(|s| s.as_str()).collect();
+        skyward_sys::kmsg(&format!("a charger or a computer powers the phone: {}", names.join(", ")))?;
+        app.plugged(now, true);
+    } else if after.is_empty() && !before.is_empty() {
+        skyward_sys::kmsg("the phone runs on its battery")?;
+        app.plugged(now, false);
     }
     Ok(())
 }
