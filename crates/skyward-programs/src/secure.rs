@@ -307,7 +307,12 @@ fn weaver(phone: &Phone) -> Result<Vec<Step>> {
         Some(_) => (WEAVER.to_string(), Kind::Aidl),
         None => (of(Kind::Hidl).expect("the phone describes a weaver").described.name(), Kind::Hidl),
     };
-    let program = behind(phone, "the weaver", &name, |file| WEAVERS.iter().any(|(ending, _)| file.ends_with(ending)))?;
+    // A phone whose scripts run no weaver of a make this knows keeps the
+    // slots to itself, as the older Qualcomm ones do; its own programs read
+    // them, and the recovery starts none.
+    let Ok(program) = behind(phone, "the weaver", &name, |file| WEAVERS.iter().any(|(ending, _)| file.ends_with(ending))) else {
+        return Ok(out);
+    };
     let file = file_name(program);
     let (_, through) = WEAVERS.iter().find(|(ending, _)| file.ends_with(ending)).with_context(|| format!("{} is a weaver of a make the recovery does not know", program.path))?;
     match through {
