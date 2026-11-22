@@ -31,10 +31,12 @@ struct Methods {
 }
 
 /// The first version of Android whose directory declares the two lookups.
+#[cfg(test)]
 const LOOKUPS_DECLARED: u32 = 36;
 
 /// How the directory of a recovery built as Android version `sdk` numbers
 /// its methods.
+#[cfg(test)]
 fn methods_of(sdk: u32) -> Methods {
     match sdk >= LOOKUPS_DECLARED {
         true => Methods { check_service: 3, add_service: 5, list_services: 6, is_declared: 9 },
@@ -165,7 +167,7 @@ pub fn find<'a>(binder: &'a crate::driver::Binder, name: &str) -> Result<Option<
         let reply = match directory.transact(form.check, &call) {
             Ok(reply) => reply,
             Err(e) => {
-                said = Some(anyhow::Error::from(e).context(format!("look up {name}")));
+                said = Some(e.context(format!("look up {name}")));
                 continue;
             }
         };
@@ -246,7 +248,7 @@ pub fn names(binder: &crate::driver::Binder) -> Result<Vec<String>> {
         let reply = match directory.transact(form.methods().list_services, &call) {
             Ok(reply) => reply,
             Err(e) => {
-                said = Some(anyhow::Error::from(e).context("list what has registered"));
+                said = Some(e.context("list what has registered"));
                 continue;
             }
         };
@@ -303,7 +305,7 @@ pub fn declared(binder: &crate::driver::Binder, name: &str) -> Result<bool> {
         let reply = match directory.transact(form.methods().is_declared, &call) {
             Ok(reply) => reply,
             Err(e) => {
-                said = Some(anyhow::Error::from(e).context(format!("ask whether {name} is described")));
+                said = Some(e.context(format!("ask whether {name} is described")));
                 continue;
             }
         };
@@ -340,22 +342,19 @@ pub fn choose_header(binder: &crate::driver::Binder) -> Result<i32> {
     // has not, every call ends in the driver. The form it answers in is
     // found by trying, and the mark it reads comes with the form.
     let give = std::time::Instant::now() + std::time::Duration::from_secs(12);
-    let mut said = None;
     loop {
         match find(binder, PROBE) {
             Ok(_) => return Ok(crate::parcel::header_mark()),
             Err(e) => {
-                said = Some(e);
                 if std::time::Instant::now() >= give {
-                    break;
+                    // The directory never answered: say why, from the last of
+                    // the tries.
+                    return Err(e);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(300));
             }
         }
     }
-    // The directory never answered: ask once more, so the caller hears why.
-    find(binder, PROBE)?;
-    Err(said.unwrap_or_else(|| anyhow::anyhow!("the directory answers nothing")))
 }
 
 #[cfg(test)]

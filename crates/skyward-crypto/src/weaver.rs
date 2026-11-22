@@ -20,7 +20,6 @@ const HIDL_SERVICE: &str = "android.hardware.weaver@1.0::IWeaver";
 const INSTANCE: &str = "default";
 
 const GET_CONFIG: u32 = 1;
-const WRITE: u32 = 2;
 const READ: u32 = 3;
 
 /// How a read went, as the weaver's second version says it in its answer.
