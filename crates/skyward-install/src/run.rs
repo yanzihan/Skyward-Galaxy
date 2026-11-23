@@ -835,10 +835,10 @@ fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
                 return Ok(Done::Decided(Outcome::Refused(Refusal::SuperForAb(named.clone()))));
             }
             let size = skyward_block::size_bytes(&device).with_context(|| format!("find the size of {}", device.display()))?;
-            // A super is written as it is read: an image of another size
-            // would leave the metadata and the extents after it at odds
-            // with the partition.
-            if len != size {
+            // A super larger than the partition cannot be written. One
+            // smaller is written as it is read, the partition's tail after
+            // it left as it was, as the metadata lies at its start.
+            if len > size {
                 return Ok(Done::Decided(Outcome::Refused(Refusal::SizeMismatch { image: len, partition: size })));
             }
             file = BufReader::with_capacity(1 << 20, File::open(fuse::PACKAGE).context("open the package")?);

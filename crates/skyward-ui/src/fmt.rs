@@ -1024,9 +1024,9 @@ pub fn refusal(l: Lang, r: &Refusal, codename: &str, source: Source, zone: usize
         ),
         Refusal::SizeMismatch { image, partition } => tr!(
             l,
-            "super 镜像 {image} 字节，而 super 分区为 {partition} 字节：两者须一致才能写入。",
-            "super 映像檔 {image} 位元組，而 super 分割區為 {partition} 位元組：兩者須一致才能寫入。",
-            "The super image is {image} bytes and the super partition {partition}: they must be the same size."
+            "super 镜像 {image} 字节，比 super 分区（{partition} 字节）还大，写不进去。",
+            "super 映像檔 {image} 位元組，比 super 分割區（{partition} 位元組）還大，寫不進去。",
+            "The super image is {image} bytes, larger than the {partition}-byte super partition."
         ),
         Refusal::NotAb(kind) if kind.is_empty() => tr!(
             l,
