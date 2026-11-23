@@ -39,8 +39,12 @@ const CHUNK: usize = 1 << 20;
 const SPARSE_MAGIC: [u8; 4] = [0x3a, 0xff, 0x26, 0xed];
 /// A super partition's metadata geometry starts with this, and the header
 /// that follows the geometry carries the partitions, both little-endian.
-const LP_GEOMETRY_MAGIC: u32 = 0x616c_4470;
+/// The partition keeps its first [`LP_RESERVED_BYTES`] for the
+/// bootloader, as liblp does, and the geometry comes after them.
+const LP_GEOMETRY_MAGIC: u32 = 0x616c_4467;
 const LP_HEADER_MAGIC: u32 = 0x414c_5030;
+const LP_RESERVED_BYTES: usize = 4096;
+const LP_GEOMETRY_SIZE: usize = 4096;
 /// The magic of the filesystems a logical partition's image holds, at the
 /// place each keeps it: ext4 at 0x438, f2fs at 0x400.
 const EXT4_MAGIC: [u8; 2] = [0x53, 0xef];
@@ -121,11 +125,13 @@ pub fn detect<R: Read + Seek>(file: &mut R, head: &[u8]) -> Result<Option<ImageK
         return Ok(Some(ImageKind::Vbmeta));
     }
     // A sparse image says what it holds in its decoded form; a head too
-    // short to hold its header is nothing this recovery writes.
+    // short to hold its header is nothing this recovery writes. A super's
+    // geometry comes after the partition's reserved bytes, so what is
+    // decoded has to reach past them.
     if head.len() >= 28 && head.starts_with(&SPARSE_MAGIC) {
         let mut decoded = Sparse::new(file, head)?;
         let mut inner = Vec::with_capacity(4096);
-        (&mut decoded).take(4096).read_to_end(&mut inner).context("read the start of a sparse image")?;
+        (&mut decoded).take(16384).read_to_end(&mut inner).context("read the start of a sparse image")?;
         if let Some(kind) = detect(&mut io::Cursor::new(&inner[..]), &inner)? {
             return Ok(Some(kind));
         }
@@ -140,7 +146,7 @@ pub fn detect<R: Read + Seek>(file: &mut R, head: &[u8]) -> Result<Option<ImageK
 /// What an image whose first bytes `head` are not a boot, vendor_boot, dtbo
 /// or vbmeta image holds: the whole super, or one partition of it.
 fn classified(head: &[u8]) -> Option<ImageKind> {
-    if head.len() >= 4 && u32::from_le_bytes(head[0..4].try_into().expect("four bytes")) == LP_GEOMETRY_MAGIC {
+    if super_geometry(head) {
         return Some(ImageKind::Super);
     }
     if head.len() >= EXT4_MAGIC_AT + 2 && head[EXT4_MAGIC_AT..EXT4_MAGIC_AT + 2] == EXT4_MAGIC {
@@ -155,6 +161,13 @@ fn classified(head: &[u8]) -> Option<ImageKind> {
         return Some(ImageKind::Logical);
     }
     None
+}
+
+/// Whether `head` holds a super's geometry where liblp keeps it, after the
+/// partition's reserved bytes, its magic.
+fn super_geometry(head: &[u8]) -> bool {
+    head.get(LP_RESERVED_BYTES..LP_RESERVED_BYTES + 4)
+        .is_some_and(|magic| u32::from_le_bytes(magic.try_into().expect("four bytes")) == LP_GEOMETRY_MAGIC)
 }
 
 /// The partitions the super a phone holds carries, in the order it lists
@@ -176,33 +189,44 @@ pub fn logical_partitions() -> Result<Vec<String>> {
 /// names its partitions without a slot's suffix, and a super that carries
 /// `_a` and `_b` names is made for one that is.
 pub fn super_partitions<R: Read>(image: &mut R, len: u64) -> Result<Vec<String>> {
-    ensure!(len >= 8192, "the image is {len} bytes, too few to hold super's metadata");
-    let mut geometry = [0u8; 4096];
-    image.read_exact(&mut geometry).context("read the geometry of super's metadata")?;
+    ensure!(
+        len >= (LP_RESERVED_BYTES + LP_GEOMETRY_SIZE * 3) as u64,
+        "the image is {len} bytes, too few to hold super's metadata"
+    );
+    // The partition keeps its first bytes for the bootloader, as liblp
+    // does; the geometry follows them, the backup copy of it next, and the
+    // metadata after both.
+    let mut before = vec![0u8; LP_RESERVED_BYTES + LP_GEOMETRY_SIZE];
+    image.read_exact(&mut before).context("read the bytes before super's metadata")?;
+    let geometry = &before[LP_RESERVED_BYTES..];
     let magic = u32::from_le_bytes(geometry[0..4].try_into().expect("four bytes"));
     ensure!(magic == LP_GEOMETRY_MAGIC, "the image is no super: its metadata starts {magic:#x}");
-    let max_size = u32::from_le_bytes(geometry[12..16].try_into().expect("four bytes")) as usize;
+    // The geometry: magic, its size, its checksum, then the size of one
+    // metadata copy, how many slots it keeps and its block size.
+    let max_size = u32::from_le_bytes(geometry[40..44].try_into().expect("four bytes")) as usize;
     ensure!((4096..=1 << 20).contains(&max_size), "super's metadata says its size is {max_size}");
-    let mut header = vec![0u8; 4096.min(max_size)];
-    image.read_exact(&mut header).context("read the header of super's metadata")?;
-    let magic = u32::from_le_bytes(header[0..4].try_into().expect("four bytes"));
+    let mut backup = vec![0u8; LP_GEOMETRY_SIZE];
+    image.read_exact(&mut backup).context("read the backup of super's geometry")?;
+    let mut metadata = vec![0u8; max_size];
+    image.read_exact(&mut metadata).context("read the metadata of super")?;
+    let magic = u32::from_le_bytes(metadata[0..4].try_into().expect("four bytes"));
     ensure!(magic == LP_HEADER_MAGIC, "super's metadata header starts {magic:#x}");
-    // The header: magic, the version, the header's size and checksum, then
-    // the size and checksum of the tables, then their place and count: the
-    // partitions' first, then the extents', the groups' and the block
-    // devices', each with where it starts, how many entries and how long
-    // each is.
-    let header_size = u32::from_le_bytes(header[8..12].try_into().expect("four bytes")) as usize;
-    ensure!(header_size >= 80 && header_size <= header.len(), "super's metadata header is {header_size} bytes");
-    let field = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().expect("four bytes")) as usize;
-    let (first, partitions, entry) = (field(24), field(28), field(32));
-    ensure!(partitions < 4096 && (36..=256).contains(&entry), "super's metadata names {partitions} partitions of {entry} bytes");
+    // The header: magic, the version, the header's size and checksum, the
+    // size and checksum of the tables, then where each table starts in
+    // them, how many entries it holds and how long each is; the partitions'
+    // table first.
+    let header_size = u32::from_le_bytes(metadata[8..12].try_into().expect("four bytes")) as usize;
+    ensure!((128..=metadata.len()).contains(&header_size), "super's metadata header is {header_size} bytes");
+    let field = |at: usize| u32::from_le_bytes(metadata[at..at + 4].try_into().expect("four bytes")) as usize;
+    let (first, partitions, entry) = (field(80), field(84), field(88));
+    ensure!(partitions < 4096 && entry >= 36, "super's metadata names {partitions} partitions of {entry} bytes");
+    let tables = &metadata[header_size..];
     let end = first.checked_add(partitions.saturating_mul(entry)).context("super's partition table has no end")?;
-    ensure!(end <= header.len(), "super's partition table ends at {end}, past the {} bytes its header holds", header.len());
+    ensure!(end <= tables.len(), "super's partition table ends at {end}, past the {} bytes of its tables", tables.len());
     let mut out = Vec::with_capacity(partitions);
     for i in 0..partitions {
         let at = first + i * entry;
-        let raw = &header[at..at + entry];
+        let raw = &tables[at..at + entry];
         let name = raw[0..36].split(|b| *b == 0).next().unwrap_or(&[]);
         let name = String::from_utf8_lossy(name).into_owned();
         ensure!(!name.is_empty(), "a partition of super's metadata has no name");
@@ -823,21 +847,55 @@ mod tests {
     /// names them is told apart.
     #[test]
     fn a_supers_metadata_names_its_partitions() {
-        let mut image = vec![0u8; 8192];
-        image[0..4].copy_from_slice(&LP_GEOMETRY_MAGIC.to_le_bytes());
-        image[12..16].copy_from_slice(&4096u32.to_le_bytes()); // metadata size
-        let header = 4096;
-        image[header..header + 4].copy_from_slice(&LP_HEADER_MAGIC.to_le_bytes());
-        image[header + 8..header + 12].copy_from_slice(&80u32.to_le_bytes()); // header size
-        image[header + 24..header + 28].copy_from_slice(&80u32.to_le_bytes()); // partitions' place
-        image[header + 28..header + 32].copy_from_slice(&2u32.to_le_bytes()); // how many
-        image[header + 32..header + 36].copy_from_slice(&52u32.to_le_bytes()); // each length
+        // As liblp lays a super out: the bootloader's reserved bytes first,
+        // then the geometry, its backup, and the metadata copy, whose
+        // header lists where the tables follow it.
+        let geometry = LP_RESERVED_BYTES;
+        let metadata = geometry + LP_GEOMETRY_SIZE * 2;
+        let len = metadata + 4096;
+        let mut image = vec![0u8; len];
+        image[geometry..geometry + 4].copy_from_slice(&LP_GEOMETRY_MAGIC.to_le_bytes());
+        image[geometry + 40..geometry + 44].copy_from_slice(&4096u32.to_le_bytes()); // metadata size
+        let header = 128; // the 1.0 header, and the tables after it
+        image[metadata..metadata + 4].copy_from_slice(&LP_HEADER_MAGIC.to_le_bytes());
+        image[metadata + 8..metadata + 12].copy_from_slice(&(header as u32).to_le_bytes()); // header size
+        image[metadata + 80..metadata + 84].copy_from_slice(&0u32.to_le_bytes()); // partitions' place in the tables
+        image[metadata + 84..metadata + 88].copy_from_slice(&2u32.to_le_bytes()); // how many
+        image[metadata + 88..metadata + 92].copy_from_slice(&52u32.to_le_bytes()); // each length
         for (i, name) in ["system", "vendor_a"].iter().enumerate() {
-            let at = header + 80 + i * 52;
+            let at = metadata + header + i * 52;
             image[at..at + name.len()].copy_from_slice(name.as_bytes());
         }
-        let names = super_partitions(&mut io::Cursor::new(image), 8192).unwrap();
+        let names = super_partitions(&mut io::Cursor::new(&image[..]), len as u64).unwrap();
         assert_eq!(names, vec!["system".to_string(), "vendor_a".to_string()]);
         assert!(names.iter().any(|n| n.ends_with("_a")), "a name with the slot's suffix is found");
+    }
+
+    /// A whole super is told apart from the partitions it holds, at the
+    /// place liblp keeps its geometry.
+    #[test]
+    fn a_whole_super_is_told_from_a_partition() {
+        let mut image = vec![0u8; LP_RESERVED_BYTES + LP_GEOMETRY_SIZE * 2];
+        image[LP_RESERVED_BYTES..LP_RESERVED_BYTES + 4].copy_from_slice(&LP_GEOMETRY_MAGIC.to_le_bytes());
+        assert_eq!(detect(&mut io::Cursor::new(&image[..]), &image).unwrap(), Some(ImageKind::Super));
+        // The same super inside a sparse image is found decoded.
+        let mut sparse = Vec::new();
+        sparse.extend_from_slice(&[0x3a, 0xff, 0x26, 0xed]);
+        sparse.extend_from_slice(&1u16.to_le_bytes()); // major
+        sparse.extend_from_slice(&0u16.to_le_bytes()); // minor
+        sparse.extend_from_slice(&28u16.to_le_bytes()); // header size
+        sparse.extend_from_slice(&12u16.to_le_bytes()); // chunk header size
+        sparse.extend_from_slice(&4096u32.to_le_bytes()); // block size
+        let blocks = (image.len() / 4096) as u32;
+        sparse.extend_from_slice(&blocks.to_le_bytes()); // blocks
+        sparse.extend_from_slice(&1u32.to_le_bytes()); // chunks
+        sparse.extend_from_slice(&0u32.to_le_bytes()); // checksum
+        sparse.extend_from_slice(&0xcac1u32.to_le_bytes()); // raw
+        sparse.extend_from_slice(&blocks.to_le_bytes());
+        sparse.extend_from_slice(&(12 + blocks * 4096).to_le_bytes());
+        sparse.extend_from_slice(&image);
+        let head = sparse[..28].to_vec();
+        let kind = detect(&mut io::Cursor::new(sparse), &head).unwrap();
+        assert_eq!(kind, Some(ImageKind::Super));
     }
 }

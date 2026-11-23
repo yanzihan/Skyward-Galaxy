@@ -18,8 +18,8 @@ const METADATA: &str = "META-INF/com/android/metadata";
 pub const UPDATE_BINARY: &str = "META-INF/com/google/android/update-binary";
 
 /// The most read to tell an image's kind: every header this recovery
-/// writes fits in one page.
-const HEAD: usize = 4096;
+/// writes fits in one page, save super's geometry after its reserved bytes.
+const HEAD: usize = 8192;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Package {
