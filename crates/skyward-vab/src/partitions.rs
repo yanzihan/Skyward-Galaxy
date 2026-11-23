@@ -401,6 +401,32 @@ fn unmap(name: &str, point: &Path) -> Result<()> {
     snapshots::unmap_snapshot(name)
 }
 
+/// Unmount one of the slot's logical partitions to write over it: anything
+/// still running from it is stopped first, as the recovery's key services
+/// keep the installed system's libraries open from it, and its loop mounts
+/// are let go, so the partition is really gone rather than left mapped
+/// under a detached mount.
+pub fn release_one(slot: Slot, base_name: &str) -> Result<()> {
+    let point = mount_point(base_name);
+    stop_users(&point);
+    if release_loops_on(&point)? {
+        mount::umount_detach_over(&point)?;
+        return Ok(());
+    }
+    for _ in 0..20 {
+        match unmount_one(slot, base_name) {
+            Ok(()) => return Ok(()),
+            Err(e) if is_busy(&e) => {
+                stop_users(&point);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    mount::umount_detach_over(&point)?;
+    Ok(())
+}
+
 /// Unmount one of the slot's logical partitions by its base name and remove
 /// its device-mapper device. One that reads through a snapshot is only
 /// unmounted: its snapshot stays mapped, for its merge to go on and for it

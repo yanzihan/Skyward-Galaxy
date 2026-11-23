@@ -841,6 +841,11 @@ fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
             if len > size {
                 return Ok(Done::Decided(Outcome::Refused(Refusal::SizeMismatch { image: len, partition: size })));
             }
+            // The partitions mapped from the super are taken away first:
+            // they read the blocks the image is about to overwrite, and
+            // what runs from them (the recovery's key services keep the
+            // installed system's libraries open) holds them busy.
+            skyward_vab::release_partitions(slot, &[]).context("unmount the slot's partitions")?;
             file = BufReader::with_capacity(1 << 20, File::open(fuse::PACKAGE).context("open the package")?);
             let (_, source) = image::opened(file).context("read the image")?;
             image::flash_plain(source, len, &[device], &mut progress)?;
@@ -848,9 +853,11 @@ fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
         // One of super's partitions: mapped writable under a name of its
         // own, written, and taken apart again.
         ImageKind::Logical => {
-            // A mounted partition is unmounted first: its own mapping would
-            // otherwise read the blocks as the old ones.
-            skyward_vab::unmount_one(slot, partition).with_context(|| format!("unmount {partition}"))?;
+            // A mounted partition is taken away first, with whatever runs
+            // from it: its own mapping would otherwise read the blocks as
+            // the old ones, and the mount cannot go while a program holds
+            // it.
+            skyward_vab::release_one(slot, partition).with_context(|| format!("unmount {partition}"))?;
             let whole = skyward_vab::map_whole(slot, partition, &format!("skyward-flash-{partition}"), false)?;
             let (len, source) = image::opened(file).context("read the image")?;
             let written = image::flash_plain(source, len, std::slice::from_ref(&whole.device), &mut progress);
