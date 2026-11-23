@@ -104,10 +104,30 @@ fn map(service: &Service<'_>) -> Result<(Vec<Entry>, PathBuf)> {
         // its key is let in.
         return Ok((entries, PathBuf::from(device)));
     };
-    let key = storage_key(service, entry, &encryption)?;
+    let key = match storage_key(service, entry, &encryption) {
+        Ok(key) => key,
+        // The key for the whole partition lives on the metadata partition,
+        // and a phone whose data partition was made anew before its system
+        // ever ran has none there: the partition it made is not encrypted,
+        // and is read as it is. One that is encrypted does not read as a
+        // filesystem, and the error stands.
+        Err(e) if key_missing(&e) && skyward_block::probe::filesystem(Path::new(&device)).ok().flatten().is_some() => {
+            return Ok((entries, PathBuf::from(device)));
+        }
+        Err(e) => return Err(e),
+    };
     let sectors = skyward_block::size_bytes(&device)? / 512;
     let mapped = dm::create(MAPPED, &[target(&device, sectors, &key, &encryption)], false)?;
     Ok((entries, mapped))
+}
+
+/// Whether reading the key failed because the metadata partition holds no
+/// key at all, as on a phone whose data partition was made before its
+/// system first set one up.
+fn key_missing(e: &anyhow::Error) -> bool {
+    e.chain()
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|e| e.kind() == std::io::ErrorKind::NotFound)
 }
 
 /// Map the data partition decrypted without mounting it, for its
@@ -178,9 +198,10 @@ pub fn open_without_credential(service: &Service<'_>) -> Result<Opening> {
         false => Some(open(service)?),
     };
     // The key for the files that belong to no user is kept beside the key
-    // of a partition encrypted whole; a phone that encrypts only its files
-    // keeps none, and none is needed.
-    if encrypted_whole()? {
+    // of a partition encrypted whole; a phone whose partition is read as it
+    // is keeps none, and none is needed. The partition is read through the
+    // mapping `map` made only where it was opened decrypted.
+    if dm::status(MAPPED)?.is_some() {
         open_shared(service)?;
     }
     let mut closed = Vec::new();
@@ -259,15 +280,6 @@ const FILE_MODE: &str = "/data/unencrypted/mode";
 
 /// Where the phone keeps each user's own keys.
 const USER_KEYS: &str = "/data/misc/vold/user_keys";
-
-/// Whether the phone encrypts its data partition whole, under a key the
-/// storage hardware holds, so that even the names read as scrambled until
-/// that key is in.
-fn encrypted_whole() -> Result<bool> {
-    let entries = skyward_block::fstab::read(MOUNT)?;
-    let entry = entries.first().with_context(|| format!("the phone's own table says nothing about {MOUNT}"))?;
-    Ok(Encryption::of(entry)?.is_some())
-}
 
 /// Whether the keys of the files themselves are ones only the storage
 /// hardware can unwrap. A phone that encrypts the whole partition keeps
@@ -560,4 +572,18 @@ fn secret_note(user: u32, synthetic_password: &[u8]) -> Result<Note> {
         Ok(token) => Note { token: Some(token), refused: None },
         Err(e) => Note { token: None, refused: Some(format!("{e:#}")) },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_key_is_told_from_one_that_cannot_be_read() {
+        let missing = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::NotFound))
+            .context("read the key in /metadata/vold/metadata_encryption/key");
+        assert!(key_missing(&missing));
+        let refused = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(!key_missing(&refused));
+    }
 }
