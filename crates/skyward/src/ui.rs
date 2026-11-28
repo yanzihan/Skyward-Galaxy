@@ -399,12 +399,26 @@ fn save_screenshot(frame: &Canvas, storage: bool, zone: usize) -> Result<Shot> {
     let ownership = ownership(there)?;
     skyward_files::make_folders(&folder, ownership)?;
     let path = folder.join(skyward_ui::fmt::screenshot_name(unix_ms_now()?, zone));
-    let file = skyward_files::make_file(&path, ownership)?;
-    let mut out = std::io::BufWriter::new(&file);
-    frame.write_png(&mut out).with_context(|| format!("write {}", path.display()))?;
-    out.flush().with_context(|| format!("write {}", path.display()))?;
-    drop(out);
-    file.sync_all().with_context(|| format!("write {}", path.display()))?;
+    // Written under another name and put in place whole: a computer looking
+    // at the folder while it is being written would see a file of nought
+    // bytes, and could keep that size for good.
+    let part = path.with_extension("part");
+    let file = skyward_files::make_file(&part, ownership)?;
+    let written = (|| -> Result<()> {
+        let mut out = std::io::BufWriter::new(&file);
+        frame.write_png(&mut out).with_context(|| format!("write {}", part.display()))?;
+        out.flush().with_context(|| format!("write {}", part.display()))?;
+        file.sync_all().with_context(|| format!("write {}", part.display()))
+    })();
+    drop(file);
+    if let Err(e) = written {
+        let _ = fs::remove_file(&part);
+        return Err(e);
+    }
+    fs::rename(&part, &path).with_context(|| format!("put {} in place", path.display()))?;
+    // The folder's own entry goes down too: a phone switched off before it
+    // would leave the picture out of the folder.
+    skyward_files::sync_dir(&folder)?;
     skyward_sys::kmsg(&format!("screenshot saved as {}", path.display()))?;
     Ok(shot)
 }

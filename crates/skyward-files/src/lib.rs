@@ -363,6 +363,14 @@ pub fn move_into(
 /// Make the folder `path` and each folder it is in that is not there yet,
 /// each new one given what `ownership` says, as a copy into the folder it
 /// is in would be.
+/// Make sure `dir`'s own changes are on the disk: a file made there is not
+/// truly there until the folder that holds it is written out, and a phone
+/// switched off too soon would leave it nought bytes long.
+pub fn sync_dir(dir: &Path) -> Result<()> {
+    let file = File::open(dir).with_context(|| format!("open {}", dir.display()))?;
+    file.sync_all().with_context(|| format!("sync {}", dir.display()))
+}
+
 pub fn make_folders(path: &Path, ownership: Ownership) -> Result<()> {
     if exists(path)? {
         return Ok(());
