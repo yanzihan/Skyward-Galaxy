@@ -357,13 +357,15 @@ impl App {
         // before then never waits for it.
         if let (Some(press), None) = (self.row_press.filter(|p| now >= p.rise), &self.row_art) {
             let page = &self.frame.as_ref().expect("rendered above").canvas;
-            let (x, y, w, h) = row_part(press.rect, page);
-            let pressed = t.pressed();
-            let band = Band { rows: (y, y + h), cols: (x, x + w) };
-            let cx = Ctx { t: &pressed, f, info, state: &self.state, term: self.term.as_ref(), band: Some(band) };
-            let down = pages::render(screen, &cx).canvas;
-            assert_eq!((down.w, down.h), (page.w, page.h), "a page held down is laid out as it was");
-            self.row_art = Some((page.crop(x, y, w, h), down.crop(x, y, w, h)));
+            // A row laid out below the page has no pixels to draw again.
+            if let Some((x, y, w, h)) = row_part(press.rect, page) {
+                let pressed = t.pressed();
+                let band = Band { rows: (y, y + h), cols: (x, x + w) };
+                let cx = Ctx { t: &pressed, f, info, state: &self.state, term: self.term.as_ref(), band: Some(band) };
+                let down = pages::render(screen, &cx).canvas;
+                assert_eq!((down.w, down.h), (page.w, page.h), "a page held down is laid out as it was");
+                self.row_art = Some((page.crop(x, y, w, h), down.crop(x, y, w, h)));
+            }
         }
         let view = View {
             scroll,
@@ -449,7 +451,7 @@ impl App {
         // laid over the page.
         let press_row = |out: &mut Canvas| {
             if let (Some(press), Some((was, is))) = (self.row_press, &self.row_art) {
-                let (x, y, _, _) = row_part(press.rect, &frame.canvas);
+                let Some((x, y, _, _)) = row_part(press.rect, &frame.canvas) else { return };
                 out.relay(was, is, x as i32, y as i32 - offset as i32, view.row);
             }
         };

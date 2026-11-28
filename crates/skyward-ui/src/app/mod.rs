@@ -1030,10 +1030,16 @@ fn row_wide(t: &Theme, r: Rect) -> bool {
 
 /// The whole pixels of the page's `canvas` a held row's `rect` covers:
 /// left, top, width and height.
-fn row_part(r: Rect, canvas: &Canvas) -> (u32, u32, u32, u32) {
-    let (x0, y0) = (r.x.floor().max(0.0) as u32, r.y.floor().max(0.0) as u32);
-    let (x1, y1) = (((r.x + r.w).ceil() as u32).min(canvas.w), ((r.y + r.h).ceil() as u32).min(canvas.h));
-    (x0, y0, x1 - x0, y1 - y0)
+fn row_part(r: Rect, canvas: &Canvas) -> Option<(u32, u32, u32, u32)> {
+    // A row laid out below the page it is drawn on — a hit that answers a
+    // tap but whose pixels are not on the page — asks for a stretch of it
+    // that is not there: the cap on its foot, taken off its head, would run
+    // backwards and wrap. It is left out here, as it is left undrawn.
+    let x0 = r.x.floor().max(0.0).min(canvas.w as f32) as u32;
+    let y0 = r.y.floor().max(0.0).min(canvas.h as f32) as u32;
+    let x1 = (((r.x + r.w).ceil().max(0.0) as u32).min(canvas.w)).max(x0);
+    let y1 = (((r.y + r.h).ceil().max(0.0) as u32).min(canvas.h)).max(y0);
+    (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
 }
 
 /// The keyboard at the foot of a typing page's `frame`, and where it rests.
