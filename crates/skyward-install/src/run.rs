@@ -40,6 +40,10 @@ pub type Detach = Box<dyn FnOnce() -> Result<()> + Send>;
 
 const METADATA: &str = "/metadata";
 const DATA: &str = "/data";
+/// Where a program written for Android's recovery keeps what it tells the
+/// update verifier, and where the phone without a cache partition links it
+/// into the data partition.
+const CACHE: &str = "/cache";
 
 /// Where a zip's install script is put to run, as Android's recovery puts
 /// it, and the version of the interface the script is told it runs under.
@@ -932,9 +936,15 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
     }
     // What the script wrote over goes back however it ended, and so does
     // the recovery of the slot that starts next, which a package that
-    // installs to the other slot switches to.
+    // installs to the other slot switches to. A phone with no slots has
+    // the single recovery partition it runs from, A.
     if let Some(kept) = &kept {
-        reflash(ctx, kept, skyward_vab::boot::next_slot().context("ask which slot starts next"));
+        let next = match skyward_vab::current_slot() {
+            Ok(Some(_)) => skyward_vab::boot::next_slot().context("ask which slot starts next"),
+            Ok(None) => Ok(Slot::A),
+            Err(e) => Err(e),
+        };
+        reflash(ctx, kept, next);
     }
     let (code, wipe_cache) = ran?;
     Ok(Done::Script { code, wipe_cache })
@@ -986,6 +996,39 @@ fn shell_at_sbin() -> Result<()> {
     symlink(SHELL, link).with_context(|| format!("link {SBIN_SHELL} to {SHELL}"))
 }
 
+/// Where a program that keeps Android recovery's paths writes the marker
+/// it leaves for the update verifier: `/cache/recovery`, followed through
+/// the link `/cache` is where the phone has no cache partition of its own
+/// and keeps it on the data partition.
+fn marker_dir(cache: &Path) -> PathBuf {
+    match fs::read_link(cache) {
+        Ok(target) => {
+            let target = match target.is_absolute() {
+                true => target,
+                false => cache.parent().unwrap_or(Path::new("/")).join(target),
+            };
+            target.join("recovery")
+        }
+        Err(_) => cache.join("recovery"),
+    }
+}
+
+/// Make the marker directory before a script runs: an updater that keeps
+/// Android recovery's paths writes its marker into `/cache/recovery`, and
+/// on a phone whose data partition was made anew the directory the link
+/// names is gone, so its own mkdir fails and `update_dynamic_partitions`
+/// gives up with the whole install.
+fn make_marker_dir() -> Result<()> {
+    let dir = marker_dir(Path::new(CACHE));
+    match fs::create_dir_all(&dir) {
+        Ok(()) => {
+            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o770));
+            Ok(())
+        }
+        Err(e) => Err(e).with_context(|| format!("make {}", dir.display())),
+    }
+}
+
 /// A line one of the install script's outputs gave.
 enum Said {
     Request(Request),
@@ -1011,6 +1054,14 @@ impl Drop for Group {
 /// leaves running is ended with it.
 fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
     let mut log = File::create(SCRIPT_LOG).with_context(|| format!("create {SCRIPT_LOG}"))?;
+    // An updater's marker for the update verifier lives in a directory of
+    // Android recovery's own under /cache: on a phone with no cache
+    // partition that is a link into the data partition, whose directory is
+    // gone once data is made anew. It is made here, before the script, so
+    // the updater's own mkdir finds it; why it could not be goes to the log.
+    if let Err(e) = make_marker_dir() {
+        let _ = kmsg(&format!("install: the marker directory under /cache was not made: {e:#}"));
+    }
     let (requests_read, requests_write) = pipe()?;
     let (output_read, output_write) = pipe()?;
     let fd = requests_write.as_raw_fd();
@@ -1155,4 +1206,28 @@ fn pipe() -> Result<(OwnedFd, OwnedFd)> {
         return Err(io::Error::last_os_error()).context("make a pipe");
     }
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_marker_directory_follows_the_link_cache_is() {
+        let tmp = std::env::temp_dir().join(format!("skyward-cache-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("data")).unwrap();
+        // A phone with no cache partition keeps /cache as a link into the
+        // data partition, which may not have the directory yet.
+        let cache = tmp.join("cache");
+        symlink("../data/cache", &cache).unwrap();
+        assert_eq!(marker_dir(&cache), tmp.join("data/cache/recovery"));
+        // A cache partition of its own is used as it stands.
+        let plain = tmp.join("plain");
+        fs::create_dir_all(&plain).unwrap();
+        assert_eq!(marker_dir(&plain), plain.join("recovery"));
+        // Nothing at the path at all is made where it stands.
+        assert_eq!(marker_dir(&tmp.join("missing")), tmp.join("missing/recovery"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }
