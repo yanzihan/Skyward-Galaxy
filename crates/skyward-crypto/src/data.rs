@@ -11,11 +11,15 @@ use crate::keystore::{StoredKey, Unwrap};
 use crate::token::Token;
 use crate::user::Bound;
 use crate::weaver::Weaver;
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use skyward_binder::driver::Binder;
 use skyward_block::fsck::Checked;
 use skyward_block::fstab::Entry;
 use skyward_block::{dm, mount};
+use std::fs;
+use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Where the data partition is mounted, and the name its decrypted form is
@@ -69,6 +73,12 @@ pub struct Opened {
 /// mount leaves no device behind.
 fn open(service: &Service<'_>) -> Result<Opened> {
     let (entries, mapped) = map(service)?;
+    mount_opened(entries, mapped)
+}
+
+/// Mount the partition at `mapped` as the phone mounts it, with the entry
+/// of the filesystem it holds, and check it where the table asks.
+fn mount_opened(entries: Vec<Entry>, mapped: PathBuf) -> Result<Opened> {
     let mounted = (|| -> Result<(Option<Checked>, String)> {
         // A phone that names the partition once per filesystem it might
         // hold mounts it with the entry of the one it holds.
@@ -91,6 +101,38 @@ fn open(service: &Service<'_>) -> Result<Opened> {
     }
 }
 
+/// Open a data partition that needs no key, as the recovery leaves one it
+/// erased whole before the system first starts: one whose table says
+/// nothing of encrypting it whole is read as it is, and one whose key went
+/// with the metadata partition is read as it is where it holds a
+/// filesystem, or made afresh here where it was left as zeros. Internal
+/// storage shows from it, so that a package can be put there and installed
+/// without a restart. One still encrypted waits for its key, and says so.
+pub fn open_plain() -> Result<Opening> {
+    let entries = skyward_block::fstab::read(MOUNT)?;
+    let entry = entries.first().with_context(|| format!("the phone's own table says nothing about {MOUNT}"))?;
+    let device = skyward_block::fstab::device(entry)?;
+    let mounted = match mount::is_mount_point(Path::new(MOUNT))? {
+        true => None,
+        false => {
+            let raw = Path::new(&device);
+            if skyward_block::probe::filesystem(raw).ok().flatten().is_none() {
+                ensure!(reads_empty(raw)?, "the data partition is encrypted; it waits for its key");
+                skyward_block::erase::make(raw, &entry.filesystem, &entry.extras, false)
+                    .with_context(|| format!("make {} afresh", raw.display()))?;
+            }
+            Some(mount_opened(entries, PathBuf::from(device))?)
+        }
+    };
+    // A partition made anew holds no storage: the owner's is made, as the
+    // system makes it, and shown, so the phone's storage is there.
+    if !Path::new(SHARED_STORAGE).join(OWNER.to_string()).is_dir() {
+        make_owner_storage()?;
+    }
+    show_owner_storage()?;
+    Ok(Opening { mounted, closed: Vec::new() })
+}
+
 /// Map the data partition decrypted, under the key the phone keeps for it,
 /// and give its table's entries, the first the one the key is found by,
 /// and the device the filesystem is read and written through.
@@ -109,9 +151,21 @@ fn map(service: &Service<'_>) -> Result<(Vec<Entry>, PathBuf)> {
         // The key for the whole partition lives on the metadata partition,
         // and a phone whose data partition was made anew before its system
         // ever ran has none there: the partition it made is not encrypted,
-        // and is read as it is. One that is encrypted does not read as a
-        // filesystem, and the error stands.
-        Err(e) if key_missing(&e) && skyward_block::probe::filesystem(Path::new(&device)).ok().flatten().is_some() => {
+        // and is read as it is. One that was erased whole and left to the
+        // system to make reads as zeros, and is made here instead, as the
+        // phone's own recovery makes it, so that it can be used before the
+        // system first starts. One still encrypted reads as nothing, and
+        // the error stands.
+        Err(e) if key_missing(&e) => {
+            let raw = Path::new(&device);
+            if skyward_block::probe::filesystem(raw).ok().flatten().is_some() {
+                return Ok((entries, PathBuf::from(device)));
+            }
+            if !reads_empty(raw)? {
+                return Err(e);
+            }
+            skyward_block::erase::make(raw, &entry.filesystem, &entry.extras, false)
+                .with_context(|| format!("make {} afresh", raw.display()))?;
             return Ok((entries, PathBuf::from(device)));
         }
         Err(e) => return Err(e),
@@ -119,6 +173,24 @@ fn map(service: &Service<'_>) -> Result<(Vec<Entry>, PathBuf)> {
     let sectors = skyward_block::size_bytes(&device)? / 512;
     let mapped = dm::create(MAPPED, &[target(&device, sectors, &key, &encryption)], false)?;
     Ok((entries, mapped))
+}
+
+/// Whether the start of a partition reads as zeros, as one erased whole and
+/// not yet made afresh does; one still holding an encrypted filesystem
+/// reads as anything but.
+fn reads_empty(device: &Path) -> Result<bool> {
+    let mut file = fs::File::open(device).with_context(|| format!("open {}", device.display()))?;
+    let mut head = vec![0u8; 64 * 1024];
+    let mut read = 0;
+    while read < head.len() {
+        match file.read(&mut head[read..]) {
+            Ok(0) => break,
+            Ok(n) => read += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e).with_context(|| format!("read {}", device.display())),
+        }
+    }
+    Ok(head[..read].iter().all(|b| *b == 0))
 }
 
 /// Whether reading the key failed because the metadata partition holds no
@@ -150,6 +222,26 @@ fn show_owner_storage() -> Result<()> {
         return Ok(());
     }
     mount::bind(&Path::new(SHARED_STORAGE).join(OWNER.to_string()), at)
+}
+
+/// The phone's media user, which owns the files of the shared storage.
+const MEDIA_USER: u32 = 1023;
+
+/// Make the owner's shared storage where a data partition made anew holds
+/// none, as the system makes it when it first starts: /data/media and the
+/// owner's folder under it, owned by the phone's media user.
+fn make_owner_storage() -> Result<()> {
+    let owner = Path::new(SHARED_STORAGE).join(OWNER.to_string());
+    for dir in [Path::new(SHARED_STORAGE), &owner] {
+        fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o770))
+            .with_context(|| format!("set the mode of {}", dir.display()))?;
+        let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).with_context(|| format!("name {}", dir.display()))?;
+        // Left as root where the owner cannot be given, which shows the
+        // storage all the same.
+        unsafe { libc::chown(path.as_ptr(), MEDIA_USER, MEDIA_USER) };
+    }
+    Ok(())
 }
 
 /// Close what opening the partition opened, where the recovery opened it:
@@ -209,8 +301,15 @@ pub fn open_without_credential(service: &Service<'_>) -> Result<Opening> {
     let users = open_users(service)?;
     // A phone whose partition is not encrypted keeps no keys for its users,
     // so none of them is opened and the owner's shared storage would never
-    // be shown; it is there as it is, and shown as the phone shows it.
-    if users.is_empty() && Path::new(SHARED_STORAGE).join(OWNER.to_string()).is_dir() {
+    // be shown; it is there as it is, and shown as the phone shows it. A
+    // partition made anew holds none: the owner's is made here, as the
+    // system makes it, so the phone's storage shows and files can be put
+    // there before the system first starts.
+    if users.is_empty() {
+        let storage = Path::new(SHARED_STORAGE).join(OWNER.to_string());
+        if !storage.is_dir() {
+            make_owner_storage()?;
+        }
         show_owner_storage()?;
     }
     for user in users {

@@ -1148,6 +1148,9 @@ struct Pages<'a> {
     /// Where rescue asked the phone to leave for, once it lets USB go.
     rescue_leaves: Option<(Target, bool)>,
     eraser: Option<Eraser>,
+    /// The erasing under way takes the data partition with it: it is made
+    /// afresh and shown once erasing ends, where it needs no key.
+    erase_had_data: bool,
     /// Erasing the system asked for leaves on its own once it is done, as
     /// does erasing an update asked for, sideloaded with a restart after it;
     /// what the user chose waits for them.
@@ -1395,6 +1398,7 @@ impl<'a> Pages<'a> {
             pending: None,
             rescue_leaves: None,
             eraser: None,
+            erase_had_data: false,
             erase_leaves: false,
             rescue_erasing: false,
             decryptor: None,
@@ -1953,7 +1957,12 @@ impl Pages<'_> {
             match ev {
                 // Rescue's page says only that erasing is under way.
                 wipe::Event::At(_) | wipe::Event::Progress(..) if self.rescue_erasing => {}
-                wipe::Event::At(step) => self.app.erase_at(part(step)),
+                wipe::Event::At(step) => {
+                    if step == Step::Data {
+                        self.erase_had_data = true;
+                    }
+                    self.app.erase_at(part(step));
+                }
                 wipe::Event::Progress(done, total) => self.app.erase_progress(done, total),
                 // Rescue stays on: its request stays in misc, and the
                 // computer hears how erasing went.
@@ -1977,6 +1986,7 @@ impl Pages<'_> {
                 }
                 wipe::Event::Ended(outcome) => {
                     let said = outcome.as_ref().map_or_else(wipe::said, |_| "done".to_string());
+                    let ok = outcome.is_ok();
                     skyward_sys::kmsg(&format!("erasing ended: {said}"))?;
                     // As with the phone's own recovery, the request is
                     // done with either way, so a restart starts the
@@ -1984,10 +1994,10 @@ impl Pages<'_> {
                     // reset done is what an update that asked for one
                     // asked, too.
                     self.done_with_request()?;
-                    if outcome.is_ok() && self.app.state.erase.reset {
+                    if ok && self.app.state.erase.reset {
                         bcb::clear(&self.misc)?;
                     }
-                    if outcome.is_ok() && self.erase_leaves {
+                    if ok && self.erase_leaves {
                         self.leave_at = Some(now + LEAVE_AFTER_MS);
                     }
                     self.app.erase_ended(outcome.map_err(erase_stop), now);
@@ -1996,6 +2006,15 @@ impl Pages<'_> {
                     if self.app.state.data == Data::Erased {
                         self.closed.clear();
                     }
+                    // A data partition erased whole is left to the system
+                    // to make afresh at its first start; the recovery makes
+                    // it now where it needs no key, so that internal
+                    // storage shows and a package can be put there and
+                    // installed without a restart.
+                    if ok && self.erase_had_data && self.decryptor.is_none() && !mount::is_mount_point(Path::new(skyward_crypto::data::MOUNT))? {
+                        self.decryptor = Some(Decryptor::start(decrypt::Job::OpenPlain)?);
+                    }
+                    self.erase_had_data = false;
                     erased = true;
                 }
             }
