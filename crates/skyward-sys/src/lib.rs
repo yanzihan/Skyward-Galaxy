@@ -164,7 +164,10 @@ impl Power {
             Power::System => "reboot,",
             Power::Recovery => "reboot,recovery",
             Power::Fastboot => "reboot,fastboot",
-            Power::Bootloader => "reboot,bootloader",
+            // Samsung's bootloader knows the reboot reason "download" and
+            // takes it for Odin's mode; "bootloader", which the reference
+            // bootloaders take, starts the system instead.
+            Power::Bootloader => "reboot,download",
             Power::Edl => "reboot,edl",
             Power::Off => "shutdown,",
         }
@@ -432,7 +435,7 @@ mod tests {
             ("system", "reboot,"),
             ("recovery", "reboot,recovery"),
             ("fastboot", "reboot,fastboot"),
-            ("bootloader", "reboot,bootloader"),
+            ("bootloader", "reboot,download"),
             ("edl", "reboot,edl"),
             ("off", "shutdown,"),
         ] {

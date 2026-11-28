@@ -150,7 +150,7 @@ const REBOOT_TARGETS: [(Text, Option<Text>); 6] = [
     (["系统", "系統", "System"], None),
     (["恢复模式", "復原模式", "Recovery"], None),
     (["Fastboot"; 3], Some(["用户空间 fastbootd", "使用者空間 fastbootd", "Userspace fastbootd"])),
-    (["Bootloader"; 3], None),
+    (["下载模式（Odin）", "下載模式（Odin）", "Download mode (Odin)"], None),
     (["EDL"; 3], Some(["高通紧急下载模式", "高通緊急下載模式", "Qualcomm emergency download"])),
     (["关机", "關機", "Power off"], None),
 ];
