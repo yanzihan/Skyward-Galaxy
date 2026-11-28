@@ -276,6 +276,12 @@ enum Cmd {
     },
 }
 
+/// Where the recovery notes that the directory for the phone's hardware
+/// services was told of the phone once: on the root filesystem, which a
+/// reboot empties, so the next start tells it again.
+#[cfg(target_os = "android")]
+const TOLD_DIRECTORY: &str = "/skyward/run/hardware-directory";
+
 fn main() -> Result<()> {
     // A panic ends the process with a signal, and its message goes to a
     // stream the phone's init does not keep; put it in the kernel log where
@@ -764,8 +770,19 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
         // recovery carries, which names none of what the phone registers,
         // and it keeps what it read. The manifest now carries the phone's,
         // and init starts it once more, to read one that does.
-        if let Err(e) = skyward_sys::set_prop("ctl.restart", skyward_programs::secure::HARDWARE_DIRECTORY) {
-            skyward_sys::kmsg(&format!("the directory for the phone's hardware services was not started again: {e:#}"))?;
+        //
+        // Restarting it forgets whatever registered with it by then, and a
+        // program that has registered — the phone's key service among them —
+        // never registers by itself again. So it is restarted once, and not
+        // again by a second instance of the recovery service: such an
+        // instance would strand the keys the first one brought up.
+        if Path::new(TOLD_DIRECTORY).exists() {
+            skyward_sys::kmsg("the directory for the phone's hardware services was told of the phone already")?;
+        } else {
+            if let Err(e) = skyward_sys::set_prop("ctl.restart", skyward_programs::secure::HARDWARE_DIRECTORY) {
+                skyward_sys::kmsg(&format!("the directory for the phone's hardware services was not started again: {e:#}"))?;
+            }
+            let _ = std::fs::write(TOLD_DIRECTORY, b"");
         }
     }
     // A program that registers with the service directory needs the
