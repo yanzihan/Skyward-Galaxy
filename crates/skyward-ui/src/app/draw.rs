@@ -172,8 +172,11 @@ impl App {
             // `LOCK_STEP` of each way: the lock's picture behind itself.
             // Taken before the charging screen goes on, so that the lock
             // screen woken later is made of the page, never of a cable's
-            // charging screen left under a dark panel.
-            if !self.locked && self.display_on {
+            // charging screen left under a dark panel. Only a page at rest
+            // is worth taking it from: reading every pixel of a screen for
+            // a picture nobody looks at while the page moves took more of a
+            // frame's time than all the rest of the drawing.
+            if !self.locked && self.display_on && matches!(self.drag, Drag::Idle) && !self.in_motion(now) {
                 self.behind = Some(out.thumbnail(LOCK_STEP));
                 self.glass = None;
             }
